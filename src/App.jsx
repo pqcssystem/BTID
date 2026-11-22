@@ -1625,22 +1625,32 @@ function ActionView({ db, setDb, currentUser, darkMode }) {
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [selectedDefect, setSelectedDefect] = useState(null);
 
-  const getLatestStatus = (defectId) => {
+  const getLatestAction = (defectId) => {
     const acts = (db.actions || []).filter(a => a.defect_id === defectId);
-    return acts.length > 0 ? acts[acts.length - 1].status : 'Open';
+    return acts.length > 0 ? acts[acts.length - 1] : null;
   };
 
   const filteredList = (db.defects || []).filter(d => {
     const bldg = (db.buildings || []).find(b => b.id === d.building_id);
     const proj = bldg ? (db.projects || []).find(p => p.id === bldg.project_id) : null;
-    const status = getLatestStatus(d.id);
-    const matchStatus = statusFilter === 'ALL' || status === statusFilter;
+    const lastAct = getLatestAction(d.id);
+    const status = lastAct ? lastAct.status : 'Open';
+    const inspectorObj = (db.inspectors || []).find(i => String(i.id) === String(d.inspector_id));
+
+    const matchStatus =
+      statusFilter === 'ALL'
+        ? true
+        : statusFilter === 'NCR'
+        ? d.defect_category === 'Hard (NCR)'
+        : status === statusFilter;
+
     const keyword = searchTerm.toLowerCase();
     const matchText = !keyword ||
       (d.defect_code || '').toLowerCase().includes(keyword) ||
       (d.defect_type || '').toLowerCase().includes(keyword) ||
       (bldg?.building_name || '').toLowerCase().includes(keyword) ||
-      (proj?.project_name || '').toLowerCase().includes(keyword);
+      (proj?.project_name || '').toLowerCase().includes(keyword) ||
+      (inspectorObj?.name || '').toLowerCase().includes(keyword);
     return matchStatus && matchText;
   });
 
@@ -1661,55 +1671,144 @@ function ActionView({ db, setDb, currentUser, darkMode }) {
     <div className="space-y-6">
       <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-black text-slate-800 dark:text-white">Action & Tindak Lanjut Perbaikan</h2>
-          <p className="text-xs font-medium text-slate-500 mt-1">Pilih item defect untuk memperbarui status perbaikan, foto after, atau mencetak NCR.</p>
+          <h2 className="text-2xl font-black text-slate-800 dark:text-white">Action & Perbaikan</h2>
+          <p className="text-xs font-medium text-slate-500 mt-1">Pilih baris defect pada tabel untuk memperbarui status perbaikan, foto after, atau mencetak NCR.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
           <div className="relative flex-1 sm:w-64">
             <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Cari ID / temuan..." className={`w-full pl-10 pr-4 py-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Cari ID / temuan / inspector..." className={`w-full pl-10 pr-4 py-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
           </div>
           <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={`px-3.5 py-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
             <option value="ALL">Semua Status</option>
             <option value="Open">Open</option>
             <option value="Proses Perbaikan">Proses Perbaikan</option>
             <option value="Close">Close</option>
+            <option value="NCR">NCR</option>
           </select>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {filteredList.map(d => {
-          const bldg = (db.buildings || []).find(b => b.id === d.building_id);
-          const proj = bldg ? (db.projects || []).find(p => p.id === bldg.project_id) : null;
-          const acts = (db.actions || []).filter(a => a.defect_id === d.id);
-          const lastAct = acts.length > 0 ? acts[acts.length - 1] : null;
-          const status = lastAct ? lastAct.status : 'Open';
-          const sla = calculateSlaStatus(d.defect_date, d.sla_days, lastAct?.action_date);
+      <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
+        <div className="overflow-x-auto rounded-t-xl border border-slate-200 dark:border-slate-700">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-[#23406E] text-white text-[11px] font-extrabold uppercase tracking-wider">
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-12">NO</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-24">ID DEFECT</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-24">TGL TEMUAN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">BANGUNAN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">DENAH</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">DISIPLIN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">KATEGORI</th>
+                <th className="py-3.5 px-4 border-r border-slate-400/30 text-center">JENIS TEMUAN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">NAMA INSPECTOR</th>
+                <th className="py-3.5 px-4 border-r border-slate-400/30 text-center">CATATAN AWAL</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-20">INFO SLA</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-24">TGL SELESAI</th>
+                <th className="py-3.5 px-4 border-r border-slate-400/30 text-center">CATATAN ACTION</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">STATUS AKHIR</th>
+                <th className="py-3.5 px-3 text-center">CLOSING BY</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+              {filteredList.map((d, idx) => {
+                const bldg = (db.buildings || []).find(b => b.id === d.building_id);
+                const fp = bldg && bldg.floorplans ? bldg.floorplans.find(f => String(f.id) === String(d.floorplan_id)) : null;
+                const floorplanName = fp ? fp.name.replace(/\.[^/.]+$/, "") : '-';
+                const lastAct = getLatestAction(d.id);
+                const status = lastAct ? lastAct.status : 'Open';
+                const actionDate = lastAct && lastAct.action_date ? lastAct.action_date : '-';
+                const actionNote = lastAct && lastAct.action_note ? lastAct.action_note : '-';
+                const sla = calculateSlaStatus(d.defect_date, d.sla_days, actionDate);
 
-          return (
-            <div key={d.id} onClick={() => setSelectedDefect(d)} className="bg-white dark:bg-slate-800 p-5 rounded-[1.75rem] border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer flex flex-col justify-between space-y-4">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-black text-[#0F4C81] dark:text-blue-400">{d.defect_code}</span>
-                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                    status === 'Close' ? 'bg-emerald-100 text-emerald-700' :
-                    status === 'Proses Perbaikan' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
-                  }`}>{status}</span>
-                </div>
-                <h4 className="text-sm font-bold text-slate-800 dark:text-white line-clamp-2">{d.defect_type}</h4>
-                <p className="text-xs text-slate-500">{proj?.project_name || '-'} • {bldg?.building_name || '-'}</p>
-              </div>
-              <div className="pt-3 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between text-xs">
-                <span className={`font-bold ${d.defect_category === 'Hard (NCR)' ? 'text-rose-600' : 'text-slate-500'}`}>{d.defect_category}</span>
-                <span className={sla.style || 'text-slate-400 font-semibold'}>{sla.text}</span>
-              </div>
-            </div>
-          );
-        })}
-        {filteredList.length === 0 && (
-          <div className="col-span-full text-center py-12 text-sm font-bold text-slate-400">Tidak ada data defect yang sesuai filter.</div>
-        )}
+                const reporterObj = (db.inspectors || []).find(i => String(i.id) === String(d.inspector_id));
+                const reporterName = reporterObj?.name || '-';
+
+                const closerObj = lastAct?.inspector_edit
+                  ? (db.inspectors || []).find(i => String(i.id) === String(lastAct.inspector_edit))
+                  : null;
+                const closingByName = status === 'Close' ? (closerObj?.name || '-') : '-';
+
+                return (
+                  <tr
+                    key={d.id}
+                    onClick={() => setSelectedDefect(d)}
+                    title="Klik untuk membuka form Action & Perbaikan"
+                    className={`cursor-pointer transition-colors ${
+                      d.defect_category === 'Hard (NCR)'
+                        ? 'bg-rose-50/40 hover:bg-rose-50 dark:bg-rose-950/20 dark:hover:bg-rose-950/40'
+                        : 'bg-white hover:bg-blue-50/70 dark:bg-slate-800 dark:hover:bg-slate-700/60'
+                    }`}
+                  >
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-medium text-slate-600 dark:text-slate-300">
+                      {idx + 1}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-bold text-slate-800 dark:text-white whitespace-nowrap">
+                      {d.defect_code}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                      {d.defect_date}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-semibold text-slate-800 dark:text-slate-200 uppercase">
+                      {bldg?.building_name || '-'}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-300">
+                      {floorplanName}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-300">
+                      {d.discipline}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-semibold whitespace-nowrap">
+                      <span className={d.defect_category === 'Hard (NCR)' ? 'text-rose-600 font-extrabold' : 'text-slate-700 dark:text-slate-300'}>
+                        {d.defect_category}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-4 border-r border-slate-200 dark:border-slate-700 font-semibold text-slate-800 dark:text-white min-w-[160px]">
+                      {d.defect_type}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                      {reporterName}
+                    </td>
+                    <td className="py-3.5 px-4 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-600 dark:text-slate-300 min-w-[140px]">
+                      {d.notes && d.notes.trim() !== '' ? d.notes : '-'}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-bold whitespace-nowrap">
+                      <span className={sla.isLate ? 'text-rose-600' : 'text-emerald-600'}>{sla.text}</span>
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                      {actionDate}
+                    </td>
+                    <td className="py-3.5 px-4 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-300 min-w-[140px]">
+                      {actionNote && actionNote.trim() !== '' ? actionNote : '-'}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-extrabold uppercase whitespace-nowrap">
+                      <span className={
+                        status === 'Close'
+                          ? 'text-emerald-600'
+                          : status === 'Proses Perbaikan'
+                          ? 'text-amber-500'
+                          : 'text-rose-500'
+                      }>
+                        {status === 'Close' ? 'CLOSE' : status === 'Proses Perbaikan' ? 'PROSES' : 'OPEN'}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-3 text-center font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                      {closingByName}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredList.length === 0 && (
+                <tr>
+                  <td colSpan={15} className="p-8 text-center text-sm font-bold text-slate-400">
+                    Tidak ada data defect yang sesuai filter.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -1743,6 +1842,7 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
   const [defectDate, setDefectDate] = useState(defect.defect_date || new Date().toISOString().slice(0, 10));
   const [slaDays, setSlaDays] = useState(defect.sla_days !== undefined && defect.sla_days !== null ? defect.sla_days : 7);
   const [notes, setNotes] = useState(defect.notes || '');
+  const [reporterInspectorId, setReporterInspectorId] = useState(defect.inspector_id ? String(defect.inspector_id) : '');
 
   const rawPinX = defect.pin_x ?? defect.pinX ?? defect.x;
   const rawPinY = defect.pin_y ?? defect.pinY ?? defect.y;
@@ -1762,6 +1862,11 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
   const [actionDate, setActionDate] = useState(latestAction?.action_date && latestAction.action_date !== '-' ? latestAction.action_date : new Date().toISOString().slice(0, 10));
   const [actionNote, setActionNote] = useState(latestAction?.action_note || '');
   const [actionPhotos, setActionPhotos] = useState((latestAction?.action_photo || []).slice(0, 2));
+  const [closingInspectorId, setClosingInspectorId] = useState(
+    latestAction?.inspector_edit
+      ? String(latestAction.inspector_edit)
+      : (currentUser?.id ? String(currentUser.id) : '')
+  );
 
   const [isSaving, setIsSaving] = useState(false);
   const [previewDocData, setPreviewDocData] = useState(null);
@@ -1917,6 +2022,7 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
         defect_date: defectDate,
         sla_days: parseInt(slaDays) || 7,
         notes,
+        inspector_id: reporterInspectorId ? parseInt(reporterInspectorId) : (defect.inspector_id || currentUser?.id || 1),
         pin_x: hasPinned ? pinPos.x : null,
         pin_y: hasPinned ? pinPos.y : null,
         marked_floorplan_image: markedImg,
@@ -1925,13 +2031,15 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
 
       await fetchSupabase(`defects?id=eq.${defect.id}`, 'PATCH', defectPatch);
 
+      const finalClosingInspectorId = closingInspectorId ? parseInt(closingInspectorId) : (currentUser?.id || 1);
+
       const actionPayload = {
         defect_id: defect.id,
         status,
         action_date: status === 'Open' ? '-' : actionDate,
         action_note: actionNote,
         action_photo: actionPhotos.slice(0, 2),
-        inspector_edit: currentUser?.id || 1
+        inspector_edit: finalClosingInspectorId
       };
 
       let savedAction = null;
@@ -1960,7 +2068,7 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
         action_date: actionPayload.action_date,
         action_note: actionNote,
         action_photos: actionPhotos.slice(0, 2),
-        inspector_edit: currentUser?.id || 1
+        inspector_edit: finalClosingInspectorId
       };
 
       if (openNcrPrint) {
@@ -1992,30 +2100,37 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
   };
 
   const isNcr = defectCategory === 'Hard (NCR)';
+  const isAdmin = currentUser?.role === 'Admin';
 
   return (
     <div className="space-y-6">
-      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-wrap justify-between items-center gap-4">
-        <div>
-          <span className="text-xs font-black text-[#0F4C81] dark:text-blue-400">{defect.defect_code}</span>
-          <h2 className="text-xl font-black text-slate-800 dark:text-white">{defectType === 'Lain-lain' && customDefectType ? customDefectType : defectType}</h2>
-        </div>
-        <div className="flex items-center gap-3">
-          {currentUser?.role === 'Admin' && (
-            <button type="button" onClick={handleDeleteDefect} className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors">
-              <Trash2 size={16}/> Hapus Record
-            </button>
-          )}
-          <button type="button" onClick={onBack} className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white rounded-xl text-xs font-bold">
-            Kembali
-          </button>
-        </div>
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex items-center">
+        <h2 className="text-2xl font-black text-[#0F4C81] dark:text-blue-400 tracking-tight">{defect.defect_code}</h2>
       </div>
 
       {/* BAGIAN 1: DATA DEFECT (LENGKAP SEPERTI INPUT DEFECT BARU) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-4">
           <h3 className="text-base font-black text-slate-800 dark:text-white border-b pb-3 border-slate-100 dark:border-slate-700">1. Data Temuan (Input Defect)</h3>
+
+          <div>
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Inspector</label>
+            <select
+              value={reporterInspectorId}
+              disabled={!isAdmin}
+              onChange={e => setReporterInspectorId(e.target.value)}
+              className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${
+                !isAdmin
+                  ? 'opacity-70 cursor-not-allowed bg-slate-100 dark:bg-slate-900/70 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                  : (darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200')
+              }`}
+            >
+              <option value="">-- Pilih Nama Inspector --</option>
+              {(db.inspectors || []).map(ins => (
+                <option key={ins.id} value={ins.id}>{ins.name}</option>
+              ))}
+            </select>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -2162,7 +2277,7 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
         <h3 className="text-base font-black text-slate-800 dark:text-white border-b pb-3 border-slate-100 dark:border-slate-700">2. Input Data Action & Perbaikan (Action / Correction)</h3>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Status Perbaikan</label>
                 <select value={status} onChange={e => setStatus(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
@@ -2174,6 +2289,24 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
               <div>
                 <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Tanggal Closing / Update</label>
                 <input type="date" value={actionDate} onChange={e => setActionDate(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Closing Inspector</label>
+                <select
+                  value={closingInspectorId}
+                  disabled={!isAdmin}
+                  onChange={e => setClosingInspectorId(e.target.value)}
+                  className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${
+                    !isAdmin
+                      ? 'opacity-70 cursor-not-allowed bg-slate-100 dark:bg-slate-900/70 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                      : (darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200')
+                  }`}
+                >
+                  <option value="">-- Pilih Inspector --</option>
+                  {(db.inspectors || []).map(ins => (
+                    <option key={ins.id} value={ins.id}>{ins.name}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -2204,26 +2337,42 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
           </div>
         </div>
 
-        <div className="pt-4 border-t border-slate-100 dark:border-slate-700 flex flex-col sm:flex-row gap-3">
+        <div className="pt-4 border-t border-slate-100 dark:border-slate-700 grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={handleDeleteDefect}
+            className="w-full py-3.5 px-4 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-600 border border-rose-200 dark:border-rose-800 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors whitespace-nowrap disabled:opacity-60"
+          >
+            <Trash2 size={17}/> Hapus Record
+          </button>
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={onBack}
+            className="w-full py-3.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-white rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors whitespace-nowrap disabled:opacity-60"
+          >
+            Kembali
+          </button>
           <button
             type="button"
             disabled={isSaving}
             onClick={() => handleUpdate(false)}
-            className="flex-1 py-4 px-6 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-md transition-all disabled:opacity-60"
+            className="w-full py-3.5 px-4 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md transition-all whitespace-nowrap disabled:opacity-60"
           >
-            <Save size={18}/> {isSaving ? 'Menyimpan...' : 'Simpan Data'}
+            <Save size={17}/> {isSaving ? 'Menyimpan...' : 'Simpan Data'}
           </button>
           <button
             type="button"
             disabled={!isNcr || isSaving}
             onClick={() => handleUpdate(true)}
-            className={`flex-1 py-4 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+            className={`w-full py-3.5 px-4 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all whitespace-nowrap ${
               isNcr
                 ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md cursor-pointer'
                 : 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
             }`}
           >
-            <Printer size={18}/> Print NCR & Simpan
+            <Printer size={17}/> Print NCR & Simpan
           </button>
         </div>
       </div>
@@ -2324,13 +2473,13 @@ function ReportView({ db, darkMode }) {
   const handlePrintReportPDF = () => {
     setIsPrintingReport(true);
     setTimeout(() => {
-      const element = document.getElementById('pqcs-report-table-printable');
+      const element = document.getElementById('pqcs-report-pdf-container');
       const opt = {
-        margin: [6, 6, 6, 6],
-        filename: `Laporan_QC_${selectedProjectTitle.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.pdf`,
+        margin: [0, 0, 0, 0],
+        filename: `Quality_Control_Report_${selectedProjectTitle.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+        html2canvas: { scale: 2, useCORS: true, width: 1122, windowWidth: 1122, x: 0, y: 0, scrollX: 0, scrollY: 0 },
+        jsPDF: { unit: 'px', format: [1122, 794], orientation: 'landscape', hotfixes: ['px_scaling'] }
       };
       const execute = (h2p) => h2p().set(opt).from(element).save().then(() => setIsPrintingReport(false));
       if (window.html2pdf) {
@@ -2341,8 +2490,20 @@ function ReportView({ db, darkMode }) {
         script.onload = () => execute(window.html2pdf);
         document.head.appendChild(script);
       }
-    }, 350);
+    }, 400);
   };
+
+  // Pembagian halaman PDF A4 Landscape sesuai lampiran image_a6768c.jpg & image_a6df88.jpg
+  const rowsPerPage = attachmentMode === 'foto' ? 6 : 13;
+  const reportPages = [];
+  if (filteredReport.length === 0) {
+    reportPages.push([]);
+  } else {
+    for (let i = 0; i < filteredReport.length; i += rowsPerPage) {
+      reportPages.push(filteredReport.slice(i, i + rowsPerPage));
+    }
+  }
+  const formattedReportDate = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
 
   return (
     <div className="space-y-4">
@@ -2650,7 +2811,196 @@ function ReportView({ db, darkMode }) {
       </div>
 
       {selectedDocItem && (
-        <DocumentFormPreviewModal data={selectedDocItem} db={db} onClose={() => setSelectedDocItem(null)} />
+        <DocumentFormPreviewModal data={selectedDocItem} db={db} onClose={() => setPreviewDocData ? setPreviewDocData(null) : setSelectedDocItem(null)} />
+      )}
+
+      {/* Template Khusus Export PDF A4 Landscape sesuai image_a6768c.jpg (Ringkas) & image_a6df88.jpg (Lengkap + Foto) */}
+      {isPrintingReport && (
+        <div style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1 }}>
+          <div id="pqcs-report-pdf-container" style={{ width: '1122px', backgroundColor: '#FFFFFF', fontFamily: 'Arial, Helvetica, sans-serif', color: '#0F172A' }}>
+            {reportPages.map((pageRows, pageIdx) => (
+              <div
+                key={pageIdx}
+                style={{
+                  width: '1122px',
+                  height: '794px',
+                  padding: '22px 26px 18px 26px',
+                  boxSizing: 'border-box',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  backgroundColor: '#FFFFFF',
+                  pageBreakAfter: pageIdx < reportPages.length - 1 ? 'always' : 'auto'
+                }}
+              >
+                <div>
+                  {/* Header Dokumen: QUALITY CONTROL REPORT */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: '8px', borderBottom: '1.5px solid #1E293B', marginBottom: '14px' }}>
+                    <div>
+                      <div style={{ fontSize: '16pt', fontWeight: 900, letterSpacing: '0.06em', color: '#0F172A', textTransform: 'uppercase', lineHeight: 1.1 }}>
+                        QUALITY CONTROL REPORT
+                      </div>
+                      <div style={{ fontSize: '9.5pt', fontWeight: 800, color: '#1E40AF', marginTop: '4px' }}>
+                        Project Name: <span style={{ textTransform: 'uppercase' }}>{selectedProjectTitle}</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#0F172A' }}>
+                      Report Date: {formattedReportDate}
+                    </div>
+                  </div>
+
+                  {/* 4 Summary Cards */}
+                  <div style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
+                    <div style={{ width: '155px', border: '1px solid #64748B', borderRadius: '6px', padding: '7px 12px', textAlign: 'center', backgroundColor: '#FFFFFF' }}>
+                      <div style={{ fontSize: '8pt', fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.04em' }}>TOTAL DEFECT</div>
+                      <div style={{ fontSize: '14pt', fontWeight: 900, color: '#1E3A8A', marginTop: '2px' }}>{summary.total}</div>
+                    </div>
+                    <div style={{ width: '155px', border: '1px solid #64748B', borderRadius: '6px', padding: '7px 12px', textAlign: 'center', backgroundColor: '#FFFFFF' }}>
+                      <div style={{ fontSize: '8pt', fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#EF4444', display: 'inline-block' }} /> OPEN
+                      </div>
+                      <div style={{ fontSize: '14pt', fontWeight: 900, color: '#EF4444', marginTop: '2px' }}>{summary.open}</div>
+                    </div>
+                    <div style={{ width: '155px', border: '1px solid #64748B', borderRadius: '6px', padding: '7px 12px', textAlign: 'center', backgroundColor: '#FFFFFF' }}>
+                      <div style={{ fontSize: '8pt', fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#F59E0B', display: 'inline-block' }} /> PROSES
+                      </div>
+                      <div style={{ fontSize: '14pt', fontWeight: 900, color: '#F59E0B', marginTop: '2px' }}>{summary.inProgress}</div>
+                    </div>
+                    <div style={{ width: '155px', border: '1px solid #64748B', borderRadius: '6px', padding: '7px 12px', textAlign: 'center', backgroundColor: '#FFFFFF' }}>
+                      <div style={{ fontSize: '8pt', fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#10B981', display: 'inline-block' }} /> CLOSE
+                      </div>
+                      <div style={{ fontSize: '14pt', fontWeight: 900, color: '#10B981', marginTop: '2px' }}>{summary.closed}</div>
+                    </div>
+                  </div>
+
+                  {/* Tabel PDF sesuai mode Lampiran */}
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt', border: '1px solid #CBD5E1' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#124578', color: '#FFFFFF', fontWeight: 800, textTransform: 'uppercase', fontSize: '7.5pt' }}>
+                        <th style={{ padding: '10px 4px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '28px' }}>NO</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '68px' }}>ID DEFECT</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '68px' }}>TGL<br/>TEMUAN</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '64px' }}>BANGUNAN</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '54px' }}>DENAH</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '66px' }}>DISIPLIN</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '62px' }}>KATEGORI</th>
+                        <th style={{ padding: '10px 6px', borderRight: '1px solid #3B6998', textAlign: 'center', width: attachmentMode === 'foto' ? '92px' : '118px' }}>JENIS<br/>TEMUAN</th>
+                        {attachmentMode === 'foto' && (
+                          <>
+                            <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '66px' }}>DENAH<br/>LOKASI</th>
+                            <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '74px' }}>BUKTI<br/>DEFECT</th>
+                          </>
+                        )}
+                        <th style={{ padding: '10px 6px', borderRight: '1px solid #3B6998', textAlign: 'center', width: attachmentMode === 'foto' ? '82px' : '112px' }}>CATATAN<br/>AWAL</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '56px' }}>INFO SLA</th>
+                        <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '68px' }}>TGL SELESAI</th>
+                        {attachmentMode === 'foto' && (
+                          <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '74px' }}>BUKTI<br/>SELESAI</th>
+                        )}
+                        <th style={{ padding: '10px 6px', borderRight: '1px solid #3B6998', textAlign: 'center', width: attachmentMode === 'foto' ? '78px' : '96px' }}>CATATAN<br/>ACTION</th>
+                        {attachmentMode === 'ringkas' && (
+                          <th style={{ padding: '10px 5px', borderRight: '1px solid #3B6998', textAlign: 'center', width: '58px' }}>PIC CLOSE</th>
+                        )}
+                        <th style={{ padding: '10px 5px', textAlign: 'center', width: '66px' }}>STATUS<br/>AKHIR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pageRows.map((item, idx) => {
+                        const globalIndex = pageIdx * rowsPerPage + idx + 1;
+                        const sla = calculateSlaStatus(item.defect_date, item.sla_days, item.action_date);
+                        const closerObj = item.inspector_edit
+                          ? (db.inspectors || []).find(i => String(i.id) === String(item.inspector_edit))
+                          : null;
+                        const picClose = item.current_status === 'Close'
+                          ? (closerObj?.initial || closerObj?.name || '-')
+                          : '-';
+
+                        const statusLabel = item.current_status === 'Close'
+                          ? 'CLOSE'
+                          : item.current_status === 'Proses Perbaikan'
+                          ? 'PROSES PERBAIKAN'
+                          : 'OPEN';
+
+                        const statusColor = item.current_status === 'Close'
+                          ? '#10B981'
+                          : item.current_status === 'Proses Perbaikan'
+                          ? '#F59E0B'
+                          : '#EF4444';
+
+                        return (
+                          <tr key={item.id} style={{ borderBottom: '1px solid #CBD5E1', backgroundColor: '#FFFFFF', height: attachmentMode === 'foto' ? '82px' : '38px' }}>
+                            <td style={{ padding: '5px 4px', borderRight: '1px solid #CBD5E1', textAlign: 'center', color: '#334155' }}>{globalIndex}</td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', textAlign: 'center', fontWeight: 700, color: '#0F172A', whiteSpace: 'nowrap' }}>{item.defect_code}</td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', textAlign: 'center', color: '#334155', whiteSpace: 'nowrap' }}>{item.defect_date}</td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', fontWeight: 600, color: '#0F172A', textTransform: 'uppercase' }}>{item.building_name}</td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', color: '#334155' }}>{item.floorplan_name}</td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', color: '#334155' }}>{item.discipline}</td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', color: '#334155', whiteSpace: 'nowrap' }}>{item.defect_category}</td>
+                            <td style={{ padding: '5px 6px', borderRight: '1px solid #CBD5E1', color: '#0F172A', lineHeight: 1.25 }}>{item.defect_type}</td>
+                            {attachmentMode === 'foto' && (
+                              <>
+                                <td style={{ padding: '4px', borderRight: '1px solid #CBD5E1', textAlign: 'center', verticalAlign: 'middle' }}>
+                                  {item.floorplan_image ? (
+                                    <img src={item.floorplan_image} alt="Denah" style={{ width: '44px', height: '66px', objectFit: 'contain', margin: '0 auto', border: '1px solid #CBD5E1', borderRadius: '2px' }} />
+                                  ) : (
+                                    <span style={{ color: '#94A3B8', fontWeight: 700 }}>N/A</span>
+                                  )}
+                                </td>
+                                <td style={{ padding: '4px', borderRight: '1px solid #CBD5E1', textAlign: 'center', verticalAlign: 'middle' }}>
+                                  {(item.defect_photo || [])[0] ? (
+                                    <img src={item.defect_photo[0]} alt="Bukti Defect" style={{ width: '54px', height: '66px', objectFit: 'cover', margin: '0 auto', borderRadius: '4px', border: '1px solid #CBD5E1' }} />
+                                  ) : (
+                                    <span style={{ color: '#94A3B8', fontWeight: 700 }}>N/A</span>
+                                  )}
+                                </td>
+                              </>
+                            )}
+                            <td style={{ padding: '5px 6px', borderRight: '1px solid #CBD5E1', color: '#334155', wordBreak: 'break-word', lineHeight: 1.25 }}>
+                              {item.notes && item.notes.trim() !== '' ? item.notes : '-'}
+                            </td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', textAlign: 'center', fontWeight: 700, color: sla.isLate ? '#EF4444' : '#10B981', whiteSpace: 'nowrap' }}>
+                              {sla.text}
+                            </td>
+                            <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', textAlign: 'center', color: '#334155', whiteSpace: 'nowrap' }}>
+                              {item.action_date || '-'}
+                            </td>
+                            {attachmentMode === 'foto' && (
+                              <td style={{ padding: '4px', borderRight: '1px solid #CBD5E1', textAlign: 'center', verticalAlign: 'middle' }}>
+                                {(item.action_photos || [])[0] ? (
+                                  <img src={item.action_photos[0]} alt="Bukti Selesai" style={{ width: '54px', height: '66px', objectFit: 'cover', margin: '0 auto', borderRadius: '4px', border: '1px solid #CBD5E1' }} />
+                                ) : (
+                                  <span style={{ color: '#94A3B8', fontWeight: 700 }}>N/A</span>
+                                )}
+                              </td>
+                            )}
+                            <td style={{ padding: '5px 6px', borderRight: '1px solid #CBD5E1', color: '#334155', wordBreak: 'break-word', lineHeight: 1.25 }}>
+                              {item.action_note && item.action_note.trim() !== '' ? item.action_note : '-'}
+                            </td>
+                            {attachmentMode === 'ringkas' && (
+                              <td style={{ padding: '5px 5px', borderRight: '1px solid #CBD5E1', textAlign: 'center', fontWeight: 600, color: '#334155' }}>
+                                {picClose}
+                              </td>
+                            )}
+                            <td style={{ padding: '5px 5px', textAlign: 'center', fontWeight: 800, color: statusColor, lineHeight: 1.2 }}>
+                              {statusLabel}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Footer Halaman */}
+                <div style={{ textAlign: 'right', fontSize: '7.5pt', fontWeight: 700, color: '#475569', paddingTop: '6px' }}>
+                  Page {pageIdx + 1} of {reportPages.length}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
