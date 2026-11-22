@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Home, Settings, Database, AlertCircle, Wrench, FileText, 
   Menu, X, Moon, Sun, Plus, Search, MapPin, Camera, Save, 
-  Trash2, Edit, CheckCircle, Clock, Download, Printer, Users, Building, LogOut, UploadCloud, Eye, EyeOff
+  Trash2, Edit, CheckCircle, Clock, Download, Printer, Users, Building, LogOut, UploadCloud,
+  Eye, EyeOff, ChevronRight, Loader2
 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
@@ -10,52 +11,138 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 const SUPABASE_API_URL = 'https://arxgvczikhndgetkfdrv.supabase.co/rest/v1/';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_FvZweQRCtcfMzLF1wX0wvA_VSywcHGs';
 
+let isOfflineMode = false;
+
+const handleOfflineRequest = (endpoint, method, data) => {
+  const urlObj = new URL('http://dummy.com/' + endpoint);
+  const table = urlObj.pathname.substring(1);
+  const search = urlObj.search;
+  
+  let db = JSON.parse(localStorage.getItem('PQCS_LocalDB')) || {
+    inspectors: [{ id: 1, name: 'Administrator', initial: 'ADM', authority: 'Admin', password: 'admin' }],
+    projects: [], buildings: [], defects: [], actions: []
+  };
+
+  if (!db[table]) db[table] = [];
+
+  if (method === 'GET') {
+    let result = [...db[table]];
+    if (search.includes('name=eq.') && search.includes('password=eq.')) {
+       const nameMatch = search.match(/name=eq\.([^&]+)/);
+       const passMatch = search.match(/password=eq\.([^&]+)/);
+       if (nameMatch && passMatch) {
+           const n = decodeURIComponent(nameMatch[1]);
+           const p = decodeURIComponent(passMatch[1]);
+           result = result.filter(i => i.name === n && i.password === p);
+       }
+    }
+    return result;
+  }
+
+  if (method === 'POST') {
+    const newItem = { id: Date.now(), created_at: new Date().toISOString(), ...data };
+    db[table].push(newItem);
+    localStorage.setItem('PQCS_LocalDB', JSON.stringify(db));
+    return [newItem];
+  }
+
+  if (method === 'PATCH') {
+    const idMatch = search.match(/id=eq\.(\d+)/);
+    if (idMatch) {
+      const targetId = String(idMatch[1]);
+      let updatedItem = null;
+      db[table] = db[table].map(item => {
+        if (String(item.id) === targetId) {
+          updatedItem = { ...item, ...data };
+          return updatedItem;
+        }
+        return item;
+      });
+      localStorage.setItem('PQCS_LocalDB', JSON.stringify(db));
+      return updatedItem ? [updatedItem] : [];
+    }
+  }
+
+  if (method === 'DELETE') {
+    const idMatch = search.match(/id=eq\.(\d+)/);
+    const defectIdMatch = search.match(/defect_id=eq\.(\d+)/);
+    const projIdMatch = search.match(/project_id=eq\.(\d+)/);
+    
+    if (idMatch) {
+      db[table] = db[table].filter(item => String(item.id) !== String(idMatch[1]));
+    } else if (defectIdMatch) {
+      db[table] = db[table].filter(item => String(item.defect_id) !== String(defectIdMatch[1]));
+    } else if (projIdMatch) {
+      db[table] = db[table].filter(item => String(item.project_id) !== String(projIdMatch[1]));
+    }
+    localStorage.setItem('PQCS_LocalDB', JSON.stringify(db));
+    return [];
+  }
+  return null;
+};
+
 // --- API SUPABASE FETCH HELPER ---
 const fetchSupabase = async (endpoint, method = 'GET', data = null) => {
+  if (isOfflineMode) return handleOfflineRequest(endpoint, method, data);
+
   const url = `${SUPABASE_API_URL}${endpoint}`;
-  const headers = {
-    'apikey': SUPABASE_PUBLISHABLE_KEY,
-    'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-    'Content-Type': 'application/json'
-  };
-  
-  if (method === 'POST' || method === 'PATCH') {
-    headers['Prefer'] = 'return=representation';
-  }
+  const headers = { 'apikey': SUPABASE_PUBLISHABLE_KEY, 'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`, 'Content-Type': 'application/json' };
+  if (method === 'POST' || method === 'PATCH') headers['Prefer'] = 'return=representation';
   
   const config = { method, headers };
   if (data) config.body = JSON.stringify(data);
 
-  const response = await fetch(url, config);
-  const text = await response.text();
-  let parsedData = null;
-  
-  if (text) {
-    try { parsedData = JSON.parse(text); } 
-    catch(e) { parsedData = text; }
+  try {
+    const response = await fetch(url, config);
+    const text = await response.text();
+    let parsedData = null;
+    if (text) { try { parsedData = JSON.parse(text); } catch(e) { parsedData = text; } }
+    if (!response.ok) throw new Error(parsedData?.message || parsedData?.error || text || response.statusText || 'Gagal terhubung ke database');
+    if (response.status === 204) return null; 
+    return parsedData;
+  } catch (error) {
+    console.warn("Supabase fetch failed, switching to offline local storage mode. Error:", error.message);
+    isOfflineMode = true;
+    return handleOfflineRequest(endpoint, method, data);
   }
-
-  if (!response.ok) {
-    throw new Error(parsedData?.message || parsedData?.error || text || response.statusText || 'Gagal terhubung ke database');
-  }
-  
-  if (response.status === 204) return null; 
-  return parsedData;
 };
 
 // --- MOCK DATA & INITIAL STATE ---
-const INITIAL_DATA = {
-  inspectors: [], projects: [], buildings: [], defects: [], actions: []
-};
+const INITIAL_DATA = { inspectors: [], projects: [], buildings: [], defects: [], actions: [] };
 
 // --- DICTIONARY KATEGORI DEFECT ---
 const DEFECT_DICTIONARY = {
-  'Struktur': ['Posisi titik pancang meleset', 'Kedalaman tidak sesuai spesifikasi', 'Daya dukung tidak tercapai', 'Retak / pecah pada tiang pancang saat pemancangan', 'Sambungan tiang pancang tidak presisi', 'Las tidak full penetration', 'Kepala tiang pecah saat cut-off', 'Dimensi pondasi tidak sesuai gambar', 'Elevasi pondasi tidak rata', 'Mutu beton kurang (keropos / honeycomb)', 'Tulangan kurang', 'Tidak ada lantai kerja', 'lantai kerja tipis', 'Penurunan tanah (settlement)', 'Beton keropos (honeycomb)', 'Retak struktural (structural crack)', 'Retak rambut (hairline crack)', 'Tulangan terlihat / selimut beton kurang', 'Pembesian tidak sesuai detail (kurang sengkang / salah jarak)', 'Slab melendut', 'Level lantai tidak rata', 'Cold joint karena pengecoran terputus', 'Anak tangga beda tinggi', 'Kemiringan tangga tidak sesuai', 'Retak di bordes'],
-  'Arsitektur': ['Dinding retak diagonal', 'Dinding bergelombang (tidak rata)', 'Plesteran kopong', 'Sudut dinding tidak siku', 'Perbedaan ketebalan plester', 'Keramik popping / meledak', 'Nat retak', 'Keramik tidak rata (lipping)', 'Pola lantai tidak simetris', 'Hollow tile (kopong saat diketuk)', 'Pintu Tidak presisi / tidak siku', 'Jendela Tidak presisi / tidak siku', 'Pintu seret / tidak menutup rapat', 'Engsel berkarat', 'Air masuk dari celah kusen', 'Sealant retak', 'Plafon retak di joint', 'Plafon melendut', 'Bekas sambungan plafond terlihat', 'Bocor dari atap', 'Warna cat belang', 'Cat mengelupas', 'Permukaan bergelombang', 'Alkali attack', 'Atap Bocor di flashing', 'Genteng bergeser', 'Rangka atap tidak lurus', 'Sekrup atap kurang', 'Sekrup atap salah posisi'],
-  'MEP': ['Kebocoran pipa air bersih', 'Tekanan air kecil', 'Sambungan pipa rembes', 'Pipa air kotor tersumbat', 'Backflow', 'Floor drain tidak turun (air menggenang)', 'Closet goyang', 'Sealant wastafel bocor', 'Bau dari floor drain', 'Stop kontak tidak berfungsi', 'MCB sering trip', 'Jalur kabel tidak sesuai SLD', 'Grounding tidak ada', 'Panel box tidak rapi', 'Saklar tidak sejajar', 'Pipa AC bocor', 'Drain AC menetes', 'Outdoor unit berisik', 'Insulasi pipa tidak rapi'],
-  'Landscape': ['Tanaman mati', 'Rumput tidak tumbuh merata', 'Sistem irigasi bocor', 'Genangan air di taman', 'Batu sikat / paving turun', 'Pohon miring', 'Tanah ambles', 'Pemadatan kurang'],
-  'Infrastructure': ['Retak pada rigid pavement', 'Aspal bergelombang', 'Paving block turun', 'Drainase tidak mengalir', 'Saluran mampet', 'Kemiringan tidak cukup', 'Tutup U-ditch pecah', 'Tekanan air tidak merata', 'Manhole bocor', 'Septic tank rembes', 'Kabel ducting amblas', 'Street light tidak berfungsi', 'Box panel outdoor kemasukan air'],
-  'Interior': [ 'Lain-lain' ],
+  'Struktur': [
+    'Posisi titik pancang meleset', 'Kedalaman tidak sesuai spesifikasi', 'Daya dukung tidak tercapai', 'Retak / pecah pada tiang pancang saat pemancangan',
+    'Sambungan tiang pancang tidak presisi', 'Las tidak full penetration', 'Kepala tiang pecah saat cut-off', 'Dimensi pondasi tidak sesuai gambar',
+    'Elevasi pondasi tidak rata', 'Mutu beton kurang (keropos / honeycomb)', 'Tulangan kurang', 'Tidak ada lantai kerja', 'lantai kerja tipis',
+    'Penurunan tanah (settlement)', 'Beton keropos (honeycomb)', 'Retak struktural (structural crack)', 'Retak rambut (hairline crack)',
+    'Tulangan terlihat / selimut beton kurang', 'Pembesian tidak sesuai detail (kurang sengkang / salah jarak)', 'Slab melendut', 'Level lantai tidak rata',
+    'Cold joint karena pengecoran terputus', 'Anak tangga beda tinggi', 'Kemiringan tangga tidak sesuai', 'Retak di bordes'
+  ],
+  'Arsitektur': [
+    'Dinding retak diagonal', 'Dinding bergelombang (tidak rata)', 'Plesteran kopong', 'Sudut dinding tidak siku', 'Perbedaan ketebalan plester',
+    'Keramik popping / meledak', 'Nat retak', 'Keramik tidak rata (lipping)', 'Pola lantai tidak simetris', 'Hollow tile (kopong saat diketuk)',
+    'Pintu Tidak presisi / tidak siku', 'Jendela Tidak presisi / tidak siku', 'Pintu seret / tidak menutup rapat', 'Engsel berkarat',
+    'Air masuk dari celah kusen', 'Sealant retak', 'Plafon retak di joint', 'Plafon melendut', 'Bekas sambungan plafond terlihat', 'Bocor dari atap',
+    'Warna cat belang', 'Cat mengelupas', 'Permukaan bergelombang', 'Alkali attack', 'Atap Bocor di flashing', 'Genteng bergeser',
+    'Rangka atap tidak lurus', 'Sekrup atap kurang', 'Sekrup atap salah posisi'
+  ],
+  'MEP': [
+    'Kebocoran pipa air bersih', 'Tekanan air kecil', 'Sambungan pipa rembes', 'Pipa air kotor tersumbat', 'Backflow', 'Floor drain tidak turun (air menggenang)',
+    'Closet goyang', 'Sealant wastafel bocor', 'Bau dari floor drain', 'Stop kontak tidak berfungsi', 'MCB sering trip', 'Jalur kabel tidak sesuai SLD',
+    'Grounding tidak ada', 'Panel box tidak rapi', 'Saklar tidak sejajar', 'Pipa AC bocor', 'Drain AC menetes', 'Outdoor unit berisik', 'Insulasi pipa tidak rapi'
+  ],
+  'Landscape': [
+    'Tanaman mati', 'Rumput tidak tumbuh merata', 'Sistem irigasi bocor', 'Genangan air di taman', 'Batu sikat / paving turun', 'Pohon miring',
+    'Tanah ambles', 'Pemadatan kurang'
+  ],
+  'Infrastructure': [
+    'Retak pada rigid pavement', 'Aspal bergelombang', 'Paving block turun', 'Drainase tidak mengalir', 'Saluran mampet', 'Kemiringan tidak cukup',
+    'Tutup U-ditch pecah', 'Tekanan air tidak merata', 'Manhole bocor', 'Septic tank rembes', 'Kabel ducting amblas', 'Street light tidak berfungsi',
+    'Box panel outdoor kemasukan air'
+  ],
+  'Interior': [ 'Lain-lain' ], 
   'General': [ 'Lain-lain' ]
 };
 
@@ -71,7 +158,7 @@ const compressImage = (file) => {
         const canvas = document.createElement('canvas');
         const MAX_WIDTH = 800; 
         let scaleSize = 1;
-        if (img.width > MAX_WIDTH) { scaleSize = MAX_WIDTH / img.width; }
+        if (img.width > MAX_WIDTH) scaleSize = MAX_WIDTH / img.width;
         canvas.width = img.width * scaleSize;
         canvas.height = img.height * scaleSize;
         const ctx = canvas.getContext('2d');
@@ -85,30 +172,15 @@ const compressImage = (file) => {
 const generateMarkedImage = (imageUrl, xPercent, yPercent, color = 'red') => {
   return new Promise((resolve) => {
     if (!imageUrl) return resolve(null);
-    const img = new Image();
-    img.crossOrigin = "Anonymous";
+    const img = new Image(); img.crossOrigin = "Anonymous";
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0);
-
-      const x = (xPercent / 100) * canvas.width;
-      const y = (yPercent / 100) * canvas.height;
-      const radiusOuter = Math.max(canvas.width * 0.015, 12);
-      const radiusInner = Math.max(canvas.width * 0.010, 8);
-
-      ctx.beginPath();
-      ctx.arc(x, y, radiusOuter, 0, 2 * Math.PI);
-      ctx.fillStyle = 'white';
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.arc(x, y, radiusInner, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.fill();
-      
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0);
+      const x = (xPercent / 100) * canvas.width; const y = (yPercent / 100) * canvas.height;
+      const radiusOuter = Math.max(canvas.width * 0.015, 12); const radiusInner = Math.max(canvas.width * 0.010, 8);
+      ctx.beginPath(); ctx.arc(x, y, radiusOuter, 0, 2 * Math.PI); ctx.fillStyle = 'white'; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, radiusInner, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill();
       resolve(canvas.toDataURL('image/jpeg', 0.8));
     };
     img.onerror = () => resolve(imageUrl);
@@ -116,25 +188,15 @@ const generateMarkedImage = (imageUrl, xPercent, yPercent, color = 'red') => {
   });
 };
 
-// --- UTILS: Dynamic SLA Calculator ---
 const calculateSlaStatus = (defect_date, sla_days, action_date) => {
   if (sla_days === undefined || sla_days === null || sla_days === '' || !defect_date) return { isLate: false, text: '-', style: '' };
-  
-  const start = new Date(defect_date);
-  start.setHours(0,0,0,0);
-  
-  const end = new Date(action_date && action_date !== '-' ? action_date : new Date());
-  end.setHours(0,0,0,0);
-  
+  const start = new Date(defect_date); start.setHours(0,0,0,0);
+  const end = new Date(action_date && action_date !== '-' ? action_date : new Date()); end.setHours(0,0,0,0);
   const diffTime = end - start;
   const durasiPerbaikan = Math.round(diffTime / (1000 * 60 * 60 * 24));
-  
   const slaRemaining = parseInt(sla_days) - durasiPerbaikan;
-  
-  if (slaRemaining < 0) {
-    return { isLate: true, text: `${slaRemaining} Hari`, style: 'text-red-600 font-bold' };
-  }
-  return { isLate: false, text: `+${slaRemaining} Hari`, style: 'text-green-600 font-bold' };
+  if (slaRemaining < 0) return { isLate: true, text: `${slaRemaining} Hari`, style: 'text-rose-600 font-bold bg-rose-50 px-2 py-0.5 rounded border border-rose-200 inline-block' };
+  return { isLate: false, text: `+${slaRemaining} Hari`, style: 'text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 inline-block' };
 };
 
 // --- MAIN APP COMPONENT ---
@@ -146,7 +208,6 @@ export default function App() {
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // --- MENGAMBIL DATA DARI SUPABASE SAAT APP DIMUAT ---
   useEffect(() => {
     const loadDB = async () => {
       setIsLoading(true);
@@ -156,79 +217,57 @@ export default function App() {
         const buildings = (await fetchSupabase('buildings?select=*')) || [];
         const defects = (await fetchSupabase('defects?select=*')) || [];
         const actions = (await fetchSupabase('actions?select=*')) || [];
-        
         setDb({ inspectors, projects, buildings, defects, actions });
       } catch (error) {
-        console.error(error);
         alert("Gagal memuat data awal dari Supabase. Pastikan RLS telah di-disable pada tabel!\n\nError: " + error.message);
-      } finally {
-        setIsLoading(false);
-      }
+      } finally { setIsLoading(false); }
     };
-
-    if (currentUser) {
-      loadDB();
-    }
+    if (currentUser) loadDB();
   }, [currentUser]);
 
   useEffect(() => {
     localStorage.setItem('PQCS_theme', darkMode ? 'dark' : 'light');
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    if (darkMode) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
   }, [darkMode]);
 
   const toggleTheme = () => setDarkMode(!darkMode);
-  
-  const handleLogin = (name, role, userId) => {
-     setCurrentUser({ name: name || 'Administrator', role: role || 'Admin', id: userId || 99 });
-  };
-  
-  const handleLogout = () => {
-     setCurrentUser(null);
-     localStorage.removeItem('HQCS_SavedUser');
-     sessionStorage.removeItem('HQCS_TempAuth');
-  };
+  const handleLogin = (name, role, userId) => setCurrentUser({ name: name || 'Administrator', role: role || 'Admin', id: userId || 99 });
+  const handleLogout = () => { setCurrentUser(null); localStorage.removeItem('HQCS_SavedUser'); sessionStorage.removeItem('HQCS_TempAuth'); };
 
   if (!currentUser) return <LoginView onLogin={handleLogin} darkMode={darkMode} toggleTheme={toggleTheme} />;
-
-  const primaryColor = "bg-[#0F4C81]";
+  const primaryColor = "bg-gradient-to-r from-[#0F4C81] to-[#1a5b96]";
   const primaryText = "text-[#0F4C81]";
 
   return (
-    <div className={`min-h-screen font-sans ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'} flex transition-colors duration-200`}>
+    <div className={`min-h-screen font-sans ${darkMode ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-800'} flex transition-colors duration-300 selection:bg-blue-200 selection:text-blue-900`}>
       <Sidebar isOpen={isSidebarOpen} setIsOpen={setIsSidebarOpen} activeMenu={activeMenu} setActiveMenu={setActiveMenu} primaryColor={primaryColor} darkMode={darkMode} currentUser={currentUser} />
-
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <header className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b p-4 flex justify-between items-center z-10 print:hidden`}>
+        <header className={`${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white/80 border-slate-200'} backdrop-blur-md border-b p-4 flex justify-between items-center z-10 print:hidden shadow-sm transition-all duration-300`}>
           <div className="flex items-center gap-3">
-            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 md:hidden">
-              <Menu size={24} />
-            </button>
-            <h1 className="text-xl font-bold hidden sm:block">PQCS <span className="text-sm font-normal text-gray-500">v1.1</span></h1>
-            {isLoading && <span className="ml-4 text-xs font-bold text-yellow-600 bg-yellow-100 px-3 py-1 rounded-full flex items-center gap-1 shadow-sm"><Clock size={12}/> Sinkronisasi Cloud...</span>}
+            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 md:hidden transition-colors focus:ring-2 focus:ring-[#0F4C81] outline-none"><Menu size={22} className="text-slate-600 dark:text-slate-300"/></button>
+            <div className="hidden sm:flex items-center gap-2">
+               <div className="w-8 h-8 rounded-lg bg-[#0F4C81] flex items-center justify-center text-white shadow-inner"><Building size={16} /></div>
+               <h1 className="text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">PQCS <span className="text-xs font-medium text-slate-400 align-top ml-1 px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700">v1.1</span></h1>
+            </div>
+            {isLoading && <span className="ml-4 text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-sm animate-pulse"><Clock size={12}/> Sinkronisasi Cloud...</span>}
           </div>
           <div className="flex items-center gap-4">
-            <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
-              {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-            </button>
-            <div className="flex items-center gap-2 pl-4 border-l border-gray-300 dark:border-gray-600">
+            <button onClick={toggleTheme} className="p-2.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus:ring-2 focus:ring-[#0F4C81] outline-none text-slate-600 dark:text-slate-300">{darkMode ? <Sun size={18} /> : <Moon size={18} />}</button>
+            <div className="flex items-center gap-3 pl-4 border-l border-slate-200 dark:border-slate-700">
               <div className="text-right hidden sm:block">
-                <p className="text-sm font-bold">{currentUser.name}</p>
-                <p className="text-xs text-gray-500">{currentUser.role}</p>
+                <p className="text-sm font-bold text-slate-800 dark:text-slate-100 leading-tight">{currentUser.name}</p>
+                <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">{currentUser.role}</p>
               </div>
-              <button onClick={handleLogout} className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full">
-                <LogOut size={20} />
-              </button>
+              <div className="h-9 w-9 rounded-full bg-blue-100 dark:bg-blue-900/50 border border-blue-200 dark:border-blue-800 flex items-center justify-center text-[#0F4C81] dark:text-blue-300 font-bold shadow-sm hidden sm:flex">{currentUser.name.charAt(0).toUpperCase()}</div>
+              <button onClick={handleLogout} className="p-2.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-full transition-colors focus:ring-2 focus:ring-rose-500 outline-none group" title="Logout"><LogOut size={18} className="group-hover:scale-110 transition-transform"/></button>
             </div>
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto p-4 md:p-6 print:p-0 relative">
-          <div className="max-w-7xl mx-auto space-y-6 print:max-w-full">
-            {activeMenu === 'dashboard' && <DashboardView db={db} primaryColor={primaryText} />}
+        <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 print:p-0 relative scroll-smooth">
+          <div className="max-w-7xl mx-auto space-y-6 print:max-w-full animate-in fade-in duration-500">
+            {activeMenu === 'dashboard' && <DashboardView db={db} primaryColor={primaryText} darkMode={darkMode} />}
             {activeMenu === 'data_awal' && <DataMasterView db={db} setDb={setDb} darkMode={darkMode} currentUser={currentUser} />}
             {activeMenu === 'input_defect' && <InputDefectView db={db} setDb={setDb} currentUser={currentUser} darkMode={darkMode} primaryColor={primaryColor} />}
             {activeMenu === 'action' && <ActionView db={db} setDb={setDb} currentUser={currentUser} darkMode={darkMode} />}
@@ -254,12 +293,8 @@ function LoginView({ onLogin, darkMode, toggleTheme }) {
     const fetchInspectors = async () => {
       try {
         const result = await fetchSupabase('inspectors?select=id,name');
-        if (result && Array.isArray(result)) {
-          setInspectorsList(result);
-        }
-      } catch (err) {
-        console.error("Gagal menarik data inspector untuk login:", err);
-      }
+        if (result && Array.isArray(result)) setInspectorsList(result);
+      } catch (err) { console.error(err); }
     };
     fetchInspectors();
   }, []);
@@ -267,24 +302,17 @@ function LoginView({ onLogin, darkMode, toggleTheme }) {
   useEffect(() => {
     const tempAuth = sessionStorage.getItem('HQCS_TempAuth');
     const savedUser = localStorage.getItem('HQCS_SavedUser');
-    
     let credentials = null;
-    if (tempAuth) {
-      try { credentials = JSON.parse(tempAuth); } catch(e) {}
-    } else if (savedUser) {
-      try { credentials = JSON.parse(savedUser); setRememberMe(true); } catch(e) {}
-    }
+    if (tempAuth) { try { credentials = JSON.parse(tempAuth); } catch(e) {} } 
+    else if (savedUser) { try { credentials = JSON.parse(savedUser); setRememberMe(true); } catch(e) {} }
 
     if (credentials && credentials.username && credentials.password) {
-      setUsername(credentials.username);
-      setPassword(credentials.password);
-      
+      setUsername(credentials.username); setPassword(credentials.password);
       const autoLogin = async () => {
         setIsAuthenticating(true);
         try {
           const queryUrl = `inspectors?select=*&name=eq.${encodeURIComponent(credentials.username)}&password=eq.${encodeURIComponent(credentials.password)}`;
           const result = await fetchSupabase(queryUrl);
-          
           if (result && result.length > 0) {
             const user = result[0];
             sessionStorage.setItem('HQCS_TempAuth', JSON.stringify({ username: credentials.username, password: credentials.password }));
@@ -292,13 +320,8 @@ function LoginView({ onLogin, darkMode, toggleTheme }) {
           } else {
             localStorage.removeItem('HQCS_SavedUser');
             sessionStorage.removeItem('HQCS_TempAuth');
-            alert("Sesi login ditolak: User tidak lagi ditemukan di database!");
           }
-        } catch(err) {
-          console.error("Auto login error:", err);
-        } finally {
-          setIsAuthenticating(false);
-        }
+        } catch(err) { console.error(err); } finally { setIsAuthenticating(false); }
       };
       autoLogin();
     }
@@ -306,78 +329,56 @@ function LoginView({ onLogin, darkMode, toggleTheme }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
-      alert("Nama User dan Password wajib diisi!");
-      return;
-    }
-    
+    if (!username.trim() || !password.trim()) { alert("Nama User dan Password wajib diisi!"); return; }
     setIsAuthenticating(true);
     try {
       const queryUrl = `inspectors?select=*&name=eq.${encodeURIComponent(username)}&password=eq.${encodeURIComponent(password)}`;
       const result = await fetchSupabase(queryUrl);
-      
       if (result && result.length > 0) {
         const user = result[0];
-        if (rememberMe) {
-          localStorage.setItem('HQCS_SavedUser', JSON.stringify({ username, password }));
-        } else {
-          localStorage.removeItem('HQCS_SavedUser');
-        }
+        if (rememberMe) localStorage.setItem('HQCS_SavedUser', JSON.stringify({ username, password }));
+        else localStorage.removeItem('HQCS_SavedUser');
         sessionStorage.setItem('HQCS_TempAuth', JSON.stringify({ username, password }));
         onLogin(user.name, user.authority || 'Admin', user.id);
-      } 
-      else {
-        alert("Gagal Login: Nama User atau Password tidak cocok pada database!");
-      }
-    } catch(err) {
-      alert("Gagal menghubungi database. Pastikan koneksi lancar dan fitur RLS Supabase telah dimatikan!");
-    } finally {
-      setIsAuthenticating(false);
-    }
+      } else { alert("Gagal Login: Nama User atau Password tidak cocok pada database!"); }
+    } catch(err) { alert("Gagal menghubungi database!"); } 
+    finally { setIsAuthenticating(false); }
   };
 
   return (
-    <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'}`}>
-      <div className="absolute top-4 right-4">
-        <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"><Sun size={24} /></button>
+    <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-900'} bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] ${darkMode ? 'from-slate-800 via-slate-900 to-black' : 'from-blue-50 via-slate-50 to-slate-100'}`}>
+      <div className="absolute top-6 right-6">
+        <button onClick={toggleTheme} className="p-3 rounded-full hover:bg-white/20 dark:hover:bg-black/20 backdrop-blur-sm transition-all shadow-sm"><Sun size={20} className={darkMode ? 'text-slate-300' : 'text-slate-600'} /></button>
       </div>
-      <div className={`w-full max-w-md p-8 rounded-2xl shadow-xl ${darkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white'}`}>
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-[#0F4C81] text-white mb-4 shadow-lg"><Building size={32} /></div>
-          <h1 className="text-3xl font-bold tracking-tight text-[#0F4C81] dark:text-blue-400">PQCS</h1>
-          <p className="text-sm text-gray-500 mt-2">Project Quality Control System</p>
+      <div className={`w-full max-w-[420px] p-8 md:p-10 rounded-[2rem] shadow-2xl ${darkMode ? 'bg-slate-800/90 border border-slate-700/50' : 'bg-white/90 border border-white'} backdrop-blur-xl animate-in zoom-in-95 duration-500`}>
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-[#0F4C81] to-[#1e6baf] text-white mb-6 shadow-lg shadow-blue-900/20 ring-4 ring-white dark:ring-slate-800 transform rotate-3"><Building size={36} className="-rotate-3"/></div>
+          <h1 className="text-3xl font-black tracking-tight text-slate-800 dark:text-white mb-2">Welcome to PQCS</h1>
+          <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Project Quality Control System</p>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label className="block text-sm font-bold mb-1.5">Nama User</label>
-            <select 
-              className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#0F4C81] outline-none ${darkMode ? 'bg-gray-900 border-gray-600' : 'bg-gray-50 border-gray-300'}`} 
-              value={username} 
-              onChange={(e) => setUsername(e.target.value)}
-            >
-              <option value="">-- Pilih Inspector --</option>
-              {inspectorsList.map(ins => (
-                <option key={ins.id} value={ins.name}>{ins.name}</option>
-              ))}
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-1.5">
+            <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 pl-1">Nama User</label>
+            <select className={`w-full p-3.5 rounded-xl border-2 focus:ring-4 focus:ring-[#0F4C81]/20 focus:border-[#0F4C81] outline-none transition-all cursor-pointer font-medium appearance-none ${darkMode ? 'bg-slate-900/50 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'}`} value={username} onChange={(e) => setUsername(e.target.value)}>
+              <option value="" disabled>-- Pilih Akun Inspector --</option>
+              {inspectorsList.map(ins => <option key={ins.id} value={ins.name}>{ins.name}</option>)}
             </select>
           </div>
-          <div>
-            <label className="block text-sm font-bold mb-1.5">Password</label>
-            <div className="relative">
-              <input type={showPassword ? "text" : "password"} className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#0F4C81] outline-none ${darkMode ? 'bg-gray-900 border-gray-600' : 'bg-gray-50 border-gray-300'}`} placeholder="Masukkan password..." value={password} onChange={(e) => setPassword(e.target.value)} />
-              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700">
-                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-              </button>
+          <div className="space-y-1.5">
+            <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 pl-1">Password</label>
+            <div className="relative group">
+              <input type={showPassword ? "text" : "password"} className={`w-full p-3.5 rounded-xl border-2 focus:ring-4 focus:ring-[#0F4C81]/20 focus:border-[#0F4C81] outline-none transition-all font-medium ${darkMode ? 'bg-slate-900/50 border-slate-700 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400'}`} placeholder="Masukkan sandi..." value={password} onChange={(e) => setPassword(e.target.value)} />
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors outline-none">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button>
             </div>
           </div>
           
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="rememberMe" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="w-4 h-4 text-[#0F4C81] rounded focus:ring-[#0F4C81]" />
-            <label htmlFor="rememberMe" className="text-sm cursor-pointer select-none">Set Default User (Remember Me)</label>
+          <div className="flex items-center gap-3 pt-2 pl-1">
+            <div className="relative flex items-start"><div className="flex items-center h-5"><input type="checkbox" id="rememberMe" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="w-4 h-4 text-[#0F4C81] bg-slate-100 border-slate-300 rounded focus:ring-[#0F4C81] dark:focus:ring-[#0F4C81] dark:ring-offset-slate-800 focus:ring-2 dark:bg-slate-700 dark:border-slate-600 transition-all cursor-pointer" /></div></div>
+            <label htmlFor="rememberMe" className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none">Ingat saya di perangkat ini</label>
           </div>
 
-          <button type="submit" disabled={isAuthenticating} className="w-full py-3 px-4 mt-2 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl transition-all shadow-md font-bold text-lg disabled:opacity-50">
-            {isAuthenticating ? 'Login...' : 'Login'}
+          <button type="submit" disabled={isAuthenticating} className="w-full py-4 px-4 mt-4 bg-gradient-to-r from-[#0F4C81] to-[#165a99] hover:from-[#0c3d68] hover:to-[#11497c] text-white rounded-xl transition-all shadow-lg shadow-blue-900/30 font-bold text-base disabled:opacity-70 disabled:cursor-not-allowed transform active:scale-[0.98]">
+            {isAuthenticating ? <span className="flex items-center justify-center gap-2"><Loader2 className="animate-spin" size={18}/> Authenticating...</span> : 'Masuk ke Sistem'}
           </button>
         </form>
       </div>
@@ -388,51 +389,45 @@ function LoginView({ onLogin, darkMode, toggleTheme }) {
 // --- SIDEBAR COMPONENT ---
 function Sidebar({ isOpen, setIsOpen, activeMenu, setActiveMenu, primaryColor, darkMode, currentUser }) {
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: Home },
+    { id: 'dashboard', label: 'Dashboard Overview', icon: Home },
     { id: 'data_awal', label: 'Project & Buildings', icon: Database },
-    { id: 'input_defect', label: 'Input Defect', icon: AlertCircle },
-    { id: 'action', label: 'Action / Perbaikan', icon: Wrench },
+    { id: 'input_defect', label: 'Input Defect Baru', icon: AlertCircle },
+    { id: 'action', label: 'Action & Perbaikan', icon: Wrench },
     { id: 'report', label: 'Report', icon: FileText },
-    { id: 'settings', label: 'Settings', icon: Settings },
+    { id: 'settings', label: 'Pengaturan Sistem', icon: Settings },
   ];
 
   return (
     <>
-      {isOpen && <div className="fixed inset-0 bg-black/50 z-20 md:hidden print:hidden" onClick={() => setIsOpen(false)} />}
-      <div className={`fixed md:static inset-y-0 left-0 z-30 w-64 ${darkMode ? 'bg-gray-900 border-gray-800' : 'bg-[#0F4C81] text-white'} border-r transition-transform duration-300 transform ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} print:hidden`}>
-        <div className={`h-16 flex items-center px-6 border-b ${darkMode ? 'border-gray-800' : 'border-blue-900'}`}>
-          <div className="flex items-center gap-2 text-white"><Building size={24} /><span className="text-xl font-bold tracking-wider">PQCS</span></div>
-          <button onClick={() => setIsOpen(false)} className="ml-auto text-gray-300 md:hidden"><X size={20}/></button>
+      {isOpen && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-20 md:hidden print:hidden transition-opacity" onClick={() => setIsOpen(false)} />}
+      <div className={`fixed md:static inset-y-0 left-0 z-30 w-[260px] ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-[#0b3a63] text-white'} border-r transition-transform duration-300 transform ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} print:hidden flex flex-col shadow-2xl md:shadow-none`}>
+        <div className={`h-[72px] shrink-0 flex items-center px-6 border-b ${darkMode ? 'border-slate-800' : 'border-blue-900/50'}`}>
+          <div className="flex items-center gap-3 text-white"><div className="bg-white/10 p-2 rounded-lg backdrop-blur-md border border-white/10"><Building size={20} className={darkMode ? 'text-blue-400' : 'text-white'}/></div><span className="text-xl font-black tracking-widest bg-clip-text text-transparent bg-gradient-to-r from-white to-blue-200">PQCS</span></div>
+          <button onClick={() => setIsOpen(false)} className="ml-auto text-slate-400 hover:text-white md:hidden p-2 rounded-lg hover:bg-white/10 transition-colors"><X size={20}/></button>
         </div>
-        <nav className="p-4 space-y-1 overflow-y-auto h-[calc(100vh-4rem)]">
-          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4 mt-2 px-2">Menu Utama</div>
-          {menuItems.map(menu => {
-            const isDisabled = menu.id === 'settings' && currentUser?.role !== 'Admin';
-            return (
-              <button 
-                key={menu.id} 
-                disabled={isDisabled}
-                onClick={() => { if(!isDisabled) { setActiveMenu(menu.id); if(window.innerWidth < 768) setIsOpen(false); } }} 
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-                  isDisabled 
-                    ? 'text-gray-400 opacity-50 cursor-not-allowed'
-                    : activeMenu === menu.id 
-                      ? (darkMode ? 'bg-gray-800 text-blue-400' : 'bg-white/20 text-white font-semibold') 
-                      : (darkMode ? 'text-gray-400 hover:bg-gray-800/50' : 'text-blue-100 hover:bg-white/10')
-                }`}
-              >
-                <menu.icon size={20} /><span>{menu.label}</span>
-              </button>
-            );
-          })}
-        </nav>
+        <div className="flex-1 overflow-y-auto p-4 py-6 scrollbar-hide">
+          <div className="text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-3 px-3">Menu Navigasi</div>
+          <nav className="space-y-1.5">
+            {menuItems.map(menu => {
+              const isDisabled = menu.id === 'settings' && currentUser?.role !== 'Admin';
+              const isActive = activeMenu === menu.id;
+              return (
+                <button key={menu.id} disabled={isDisabled} onClick={() => { if(!isDisabled) { setActiveMenu(menu.id); if(window.innerWidth < 768) setIsOpen(false); } }} className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl transition-all duration-200 outline-none group ${isDisabled ? 'opacity-40 cursor-not-allowed' : isActive ? (darkMode ? 'bg-blue-900/30 text-blue-400 border border-blue-800/50 shadow-inner' : 'bg-white/15 text-white font-bold border border-white/10 shadow-inner') : (darkMode ? 'text-slate-400 hover:bg-slate-800 hover:text-slate-200' : 'text-blue-100/70 hover:bg-white/5 hover:text-white')}`}>
+                  <div className="flex items-center gap-3.5"><menu.icon size={18} className={`transition-transform duration-300 ${isActive ? 'scale-110' : 'group-hover:scale-110'}`} /><span className={`text-sm tracking-wide ${isActive ? 'font-bold' : 'font-medium'}`}>{menu.label}</span></div>
+                  {isActive && <ChevronRight size={14} className="opacity-50" />}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+        <div className={`p-4 border-t ${darkMode ? 'border-slate-800' : 'border-blue-900/50'} text-center shrink-0`}><p className={`text-[10px] font-medium tracking-wider ${darkMode ? 'text-slate-500' : 'text-blue-200/50'}`}>© 2026 PQCS Enterprise</p></div>
       </div>
     </>
   );
 }
 
 // --- DASHBOARD VIEW ---
-function DashboardView({ db }) {
+function DashboardView({ db, darkMode }) {
   const [selectedProjectId, setSelectedProjectId] = useState('ALL');
   const [isExportingPDF, setIsExportingPDF] = useState(false);
 
@@ -455,10 +450,10 @@ function DashboardView({ db }) {
   const actualOpen = total - uniqueInProgress - uniqueClosed;
 
   const stats = [
-    { label: 'Total Defect', value: total, color: 'border-l-blue-500', icon: AlertCircle, text: 'text-blue-500' },
-    { label: 'Open', value: actualOpen, color: 'border-l-red-500', icon: AlertCircle, text: 'text-red-500' },
-    { label: 'Proses Perbaikan', value: uniqueInProgress, color: 'border-l-yellow-500', icon: Clock, text: 'text-yellow-600' },
-    { label: 'Close', value: uniqueClosed, color: 'border-l-green-500', icon: CheckCircle, text: 'text-green-500' },
+    { label: 'Total Defect Terdata', value: total, color: 'from-blue-500 to-blue-600', shadow: 'shadow-blue-500/20', icon: AlertCircle, bgIcon: 'bg-blue-100 text-blue-600' },
+    { label: 'Status Open', value: actualOpen, color: 'from-rose-500 to-rose-600', shadow: 'shadow-rose-500/20', icon: AlertCircle, bgIcon: 'bg-rose-100 text-rose-600' },
+    { label: 'Proses Perbaikan', value: uniqueInProgress, color: 'from-amber-400 to-amber-500', shadow: 'shadow-amber-500/20', icon: Clock, bgIcon: 'bg-amber-100 text-amber-600' },
+    { label: 'Selesai (Closed)', value: uniqueClosed, color: 'from-emerald-400 to-emerald-500', shadow: 'shadow-emerald-500/20', icon: CheckCircle, bgIcon: 'bg-emerald-100 text-emerald-600' },
   ];
 
   const getDefectStatus = (defectId) => {
@@ -468,59 +463,36 @@ function DashboardView({ db }) {
   };
 
   const categories = { 'Minor': 0, 'Major': 0, 'Hard (NCR)': 0 };
-  
-  let slaOnTime = 0;
-  let slaLate = 0;
+  let slaOnTime = 0; let slaLate = 0;
   const disciplineSla = {};
   
   const disciplines = filteredDefects.reduce((acc, curr) => { 
-    if (!acc[curr.discipline]) {
-      acc[curr.discipline] = { name: curr.discipline, total: 0, open: 0, in_progress: 0, close: 0 };
-      disciplineSla[curr.discipline] = { name: curr.discipline, onTime: 0, late: 0 };
-    }
+    if (!acc[curr.discipline]) { acc[curr.discipline] = { name: curr.discipline, total: 0, open: 0, in_progress: 0, close: 0 }; disciplineSla[curr.discipline] = { name: curr.discipline, onTime: 0, late: 0 }; }
     acc[curr.discipline].total += 1;
-    
     if(curr.defect_category) categories[curr.defect_category] = (categories[curr.defect_category] || 0) + 1;
-
     const status = getDefectStatus(curr.id);
-    if (status === 'Open') acc[curr.discipline].open += 1;
-    else if (status === 'Proses Perbaikan') acc[curr.discipline].in_progress += 1;
-    else if (status === 'Close') acc[curr.discipline].close += 1;
+    if (status === 'Open') acc[curr.discipline].open += 1; else if (status === 'Proses Perbaikan') acc[curr.discipline].in_progress += 1; else if (status === 'Close') acc[curr.discipline].close += 1;
     
     const actions = filteredActions.filter(a => a.defect_id === curr.id);
     const lastActionDate = actions.length > 0 ? actions[actions.length - 1].action_date : '-';
     const slaInfo = calculateSlaStatus(curr.defect_date, curr.sla_days, lastActionDate);
-    
-    if (slaInfo.isLate) {
-      slaLate++;
-      disciplineSla[curr.discipline].late++;
-    } else {
-      slaOnTime++;
-      disciplineSla[curr.discipline].onTime++;
-    }
-    
+    if (slaInfo.isLate) { slaLate++; disciplineSla[curr.discipline].late++; } else { slaOnTime++; disciplineSla[curr.discipline].onTime++; }
     return acc; 
   }, {});
 
   const discArray = Object.values(disciplines).sort((a, b) => b.total - a.total);
-  const maxDiscipline = discArray.length > 0 ? Math.max(...discArray.map(d => d.total)) : 1;
-
   const slaDiscArray = Object.values(disciplineSla).sort((a, b) => (b.onTime + b.late) - (a.onTime + a.late));
-  const maxSlaDiscipline = slaDiscArray.length > 0 ? Math.max(...slaDiscArray.map(d => d.onTime + d.late)) : 1;
-  const totalSlaCalculated = slaOnTime + slaLate;
 
-  const statusDonutData = [
-    { value: actualOpen, color: '#ef4444' }, 
-    { value: uniqueInProgress, color: '#eab308' },
-    { value: uniqueClosed, color: '#22c55e' }
+  const statusChartData = [
+    { name: 'Open', value: actualOpen, color: '#f43f5e' },
+    { name: 'Proses Perbaikan', value: uniqueInProgress, color: '#f59e0b' },
+    { name: 'Selesai (Closed)', value: uniqueClosed, color: '#10b981' },
   ];
-  let statusPercent = 0;
 
-  const slaDonutData = [
-    { value: slaOnTime, color: '#22c55e' },
-    { value: slaLate, color: '#ef4444' }
+  const slaChartData = [
+    { name: 'On Time', value: slaOnTime, color: '#10b981' },
+    { name: 'Overdue (Terlambat)', value: slaLate, color: '#f43f5e' },
   ];
-  let slaPercent = 0;
 
   const selectedProjectName = selectedProjectId === 'ALL' ? 'SELURUH PROYEK' : (db.projects || []).find(p => p.id === parseInt(selectedProjectId))?.project_name;
 
@@ -529,476 +501,855 @@ function DashboardView({ db }) {
     setTimeout(() => {
       const element = document.getElementById('dashboard-printable-area');
       const opt = {
-        margin: 0, 
+        margin: [4, 4, 4, 4],
         filename: `Dashboard_PQCS_${selectedProjectName?.replace(/\s+/g, '_') || 'ALL'}_${new Date().toISOString().slice(0,10)}.pdf`,
-        image: { type: 'jpeg', quality: 1 },
-        html2canvas: { scale: 2, useCORS: true }, 
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } 
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, width: 1122, windowWidth: 1122 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
       };
-
+      const execute = (h2p) => h2p().set(opt).from(element).save().then(() => setIsExportingPDF(false));
       if (window.html2pdf) {
-         window.html2pdf().set(opt).from(element).save().then(() => setIsExportingPDF(false));
+        execute(window.html2pdf);
       } else {
-         const script = document.createElement('script');
-         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-         script.onload = () => { window.html2pdf().set(opt).from(element).save().then(() => setIsExportingPDF(false)); };
-         document.head.appendChild(script);
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+        script.onload = () => execute(window.html2pdf);
+        document.head.appendChild(script);
       }
-    }, 300); 
+    }, 450);
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-        <div className="flex items-center gap-3">
-          <label className="font-bold text-gray-700 dark:text-gray-300">Filter Proyek:</label>
-          <select 
-            className="p-2 border rounded-lg focus:ring-2 focus:ring-[#0F4C81] outline-none dark:bg-gray-700 dark:border-gray-600 dark:text-white"
-            value={selectedProjectId} 
-            onChange={e => setSelectedProjectId(e.target.value)}
-          >
-            <option value="ALL">Data Seluruh Proyek</option>
-            {(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
-          </select>
+    <div
+      id="dashboard-printable-area"
+      style={isExportingPDF ? { width: '1122px', height: '775px', overflow: 'hidden', backgroundColor: '#ffffff', padding: '12px 16px', boxSizing: 'border-box' } : undefined}
+      className={isExportingPDF ? 'flex flex-col justify-between text-slate-900' : 'space-y-6'}
+    >
+      <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'p-3 rounded-xl border border-slate-300' : 'p-6 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-700'} flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3`}>
+        <div>
+          <h2 className={`${isExportingPDF ? 'text-lg' : 'text-2xl'} font-black tracking-tight text-slate-800 dark:text-white`}>
+            DASHBOARD OVERVIEW — PROJECT QUALITY CONTROL SYSTEM
+          </h2>
+          <p className="text-xs font-medium text-slate-500 mt-0.5">
+            Proyek: <span className="font-bold text-[#0F4C81] dark:text-blue-400">{selectedProjectName}</span> • Tanggal Cetak: {new Date().toLocaleDateString('id-ID')}
+          </p>
         </div>
-        <button onClick={handlePrint} disabled={isExportingPDF} className="px-4 py-2 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-lg text-sm font-medium flex items-center gap-2 shadow-sm disabled:opacity-50">
-          <Printer size={16}/> {isExportingPDF ? 'Mengekspor PDF...' : 'Cetak Dashboard (PDF)'}
-        </button>
+        {!isExportingPDF && (
+          <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto print:hidden">
+            <select
+              value={selectedProjectId}
+              onChange={(e) => setSelectedProjectId(e.target.value)}
+              className={`px-4 py-2.5 rounded-xl border-2 text-sm font-bold outline-none transition-all ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'}`}
+            >
+              <option value="ALL">Seluruh Proyek ({(db.projects || []).length})</option>
+              {(db.projects || []).map(p => (
+                <option key={p.id} value={p.id}>{p.project_name}</option>
+              ))}
+            </select>
+            <button
+              onClick={handlePrint}
+              disabled={isExportingPDF}
+              className="px-4 py-2.5 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-sm transition-all disabled:opacity-60"
+            >
+              <Printer size={16} /> Print Dashboard
+            </button>
+          </div>
+        )}
       </div>
 
-      <div id="dashboard-printable-area" 
-           className={isExportingPDF ? 'bg-white text-black p-10 flex flex-col justify-between mx-auto overflow-hidden shadow-none' : 'space-y-6'}
-           style={isExportingPDF ? { width: '794px', height: '1123px' } : {}}>
-        <div className={`${isExportingPDF ? 'text-center border-b-2 border-gray-800 pb-4 mb-2' : 'mb-2'}`}>
-          {isExportingPDF && <h1 className="text-xl font-black uppercase tracking-widest text-[#0F4C81] mb-2">PQCS DASHBOARD REPORT</h1>}
-          <h2 className={`font-black text-[#0F4C81] uppercase tracking-wide ${isExportingPDF ? 'text-2xl bg-gray-100 py-2 rounded' : 'text-3xl dark:text-blue-400'}`}>
-             {selectedProjectName}
-          </h2>
-          <p className="text-sm text-gray-500 mt-1">Ringkasan Status Quality Control {isExportingPDF && `| Dicetak pada: ${new Date().toLocaleString('id-ID')}`}</p>
-        </div>
-
-        <div className={`grid ${isExportingPDF ? 'grid-cols-4' : 'grid-cols-2 lg:grid-cols-4'} gap-4`}>
-          {stats.map((stat, i) => (
-            <div key={i} className={`p-4 rounded-2xl shadow-sm border border-gray-200 border-l-4 ${stat.color} ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 dark:border-gray-700'} flex items-center justify-between`}>
-              <div>
-                <p className={`text-xs font-medium ${isExportingPDF ? 'text-gray-600' : 'text-gray-500 dark:text-gray-400'}`}>{stat.label}</p>
-                <p className={`text-2xl font-bold mt-1 ${isExportingPDF ? 'text-gray-900' : 'text-gray-800 dark:text-white'}`}>{stat.value}</p>
-              </div>
-              <div className={`p-2 rounded-full ${isExportingPDF ? 'bg-gray-100' : 'bg-gray-50 dark:bg-gray-900'} ${stat.text}`}>
-                <stat.icon size={20} />
-              </div>
+      {/* KPI Cards */}
+      <div className={`grid ${isExportingPDF ? 'grid-cols-4 gap-3' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5'}`}>
+        {stats.map((s, idx) => (
+          <div key={idx} className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'p-3 rounded-xl border border-slate-300' : `p-6 rounded-[1.75rem] border border-slate-200 dark:border-slate-700 shadow-lg ${s.shadow}`} flex items-center justify-between`}>
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">{s.label}</p>
+              <p className={`${isExportingPDF ? 'text-2xl' : 'text-3xl'} font-black text-slate-800 dark:text-white`}>{s.value}</p>
             </div>
-          ))}
-        </div>
-
-        {/* GRAFIK 1: STATUS TERBUKA / TERTUTUP */}
-        <div className={`grid ${isExportingPDF ? 'grid-cols-3' : 'grid-cols-1 lg:grid-cols-3'} gap-6`}>
-          <div className={`${isExportingPDF ? 'col-span-1' : 'lg:col-span-1'} p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col items-center justify-center ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 dark:border-gray-700'}`}>
-            <h3 className={`text-sm font-bold mb-4 w-full text-left ${isExportingPDF ? 'text-black' : ''}`}>Komposisi Status Defect</h3>
-            {total === 0 ? (
-              <p className="text-gray-400 italic py-10 text-xs">Belum ada data</p>
-            ) : (
-              <div className="relative w-32 h-32 mb-4">
-                <svg viewBox="0 0 36 36" className="w-full h-full transform -rotate-90">
-                  {statusDonutData.map((slice, i) => {
-                    const percent = (slice.value / total) * 100;
-                    const dashArray = `${percent} ${100 - percent}`;
-                    const dashOffset = 100 - statusPercent;
-                    statusPercent += percent;
-                    return slice.value > 0 ? (
-                      <circle key={i} r="15.91549430918954" cx="18" cy="18" fill="transparent" stroke={slice.color} strokeWidth="4" strokeDasharray={dashArray} strokeDashoffset={dashOffset} />
-                    ) : null;
-                  })}
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className={`text-xl font-bold ${isExportingPDF ? 'text-black' : 'text-gray-800 dark:text-white'}`}>{total}</span>
-                </div>
-              </div>
-            )}
-            <div className={`flex gap-2 text-[10px] font-bold w-full justify-center flex-wrap ${isExportingPDF ? 'text-black' : 'text-gray-600 dark:text-gray-300'}`}>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> Open ({actualOpen})</div>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> Proses ({uniqueInProgress})</div>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span> Close ({uniqueClosed})</div>
+            <div className={`${isExportingPDF ? 'w-9 h-9 rounded-xl' : 'w-12 h-12 rounded-2xl'} flex items-center justify-center ${s.bgIcon}`}>
+              <s.icon size={isExportingPDF ? 18 : 24} />
             </div>
           </div>
+        ))}
+      </div>
 
-          <div className={`${isExportingPDF ? 'col-span-2' : 'lg:col-span-2'} p-6 rounded-2xl shadow-sm border border-gray-200 ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 dark:border-gray-700'}`}>
-            <h3 className={`text-sm font-bold mb-4 ${isExportingPDF ? 'text-black' : ''}`}>Distribusi Defect Berdasarkan Disiplin</h3>
-            {discArray.length === 0 ? (
-              <p className="text-center text-gray-400 py-10 italic text-xs">Belum ada data</p>
-            ) : (
-              <div className="h-40 flex items-end gap-2 sm:gap-6 border-b border-gray-200 dark:border-gray-700 pb-2 relative">
-                <div className="absolute inset-0 flex flex-col justify-between pointer-events-none border-l border-gray-200 dark:border-gray-700 pl-1 pb-2">
-                   <div className="w-full h-0 border-t border-dashed border-gray-200 dark:border-gray-700 flex items-start"><span className={`text-[10px] text-gray-400 -mt-2 ml-1 ${isExportingPDF ? 'text-gray-600' : ''}`}>{maxDiscipline}</span></div>
-                   <div className="w-full h-0 border-t border-dashed border-gray-200 dark:border-gray-700 flex items-start"><span className={`text-[10px] text-gray-400 -mt-2 ml-1 ${isExportingPDF ? 'text-gray-600' : ''}`}>{Math.ceil(maxDiscipline/2)}</span></div>
-                   <div className="w-full h-0 flex items-end"><span className={`text-[10px] text-gray-400 mb-1 ml-1 ${isExportingPDF ? 'text-gray-600' : ''}`}>0</span></div>
-                </div>
-                {discArray.map((d, i) => (
-                  <div key={i} className="flex-1 flex flex-col justify-end items-center group relative z-10 h-full pt-6">
-                    {!isExportingPDF && (
-                      <div className="absolute -top-6 bg-gray-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-20">
-                        Total: {d.total} (O: {d.open}, P: {d.in_progress}, C: {d.close})
-                      </div>
-                    )}
-                    <div className={`w-full max-w-[30px] flex flex-col justify-end h-full rounded-t-sm overflow-hidden ${isExportingPDF ? 'bg-white border border-gray-300' : 'bg-gray-100 dark:bg-gray-800'}`}>
-                      <div style={{height: `${(d.open / maxDiscipline) * 100}%`}} className="w-full bg-red-500"></div>
-                      <div style={{height: `${(d.in_progress / maxDiscipline) * 100}%`}} className="w-full bg-yellow-500"></div>
-                      <div style={{height: `${(d.close / maxDiscipline) * 100}%`}} className="w-full bg-green-500"></div>
-                    </div>
-                    <span className={`text-[9px] font-bold mt-1 truncate w-full text-center ${isExportingPDF ? 'text-black' : 'text-gray-600 dark:text-gray-300'}`} title={d.name}>{d.name.substring(0,6)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+      {/* Severity Summary */}
+      <div className={`grid ${isExportingPDF ? 'grid-cols-3 gap-3' : 'grid-cols-1 md:grid-cols-3 gap-5'}`}>
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'px-4 py-2 rounded-xl border border-slate-300' : 'p-5 rounded-2xl border border-slate-200 dark:border-slate-700'} flex items-center justify-between`}>
+          <div>
+            <span className="text-[11px] font-bold uppercase text-blue-600">Kategori Minor</span>
+            <p className={`${isExportingPDF ? 'text-lg' : 'text-2xl'} font-black`}>{categories['Minor'] || 0}</p>
+          </div>
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-600">Minor</span>
+        </div>
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'px-4 py-2 rounded-xl border border-slate-300' : 'p-5 rounded-2xl border border-slate-200 dark:border-slate-700'} flex items-center justify-between`}>
+          <div>
+            <span className="text-[11px] font-bold uppercase text-amber-600">Kategori Major</span>
+            <p className={`${isExportingPDF ? 'text-lg' : 'text-2xl'} font-black`}>{categories['Major'] || 0}</p>
+          </div>
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-600">Major</span>
+        </div>
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'px-4 py-2 rounded-xl border border-slate-300' : 'p-5 rounded-2xl border border-slate-200 dark:border-slate-700'} flex items-center justify-between`}>
+          <div>
+            <span className="text-[11px] font-bold uppercase text-rose-600">Hard (NCR)</span>
+            <p className={`${isExportingPDF ? 'text-lg' : 'text-2xl'} font-black`}>{categories['Hard (NCR)'] || 0}</p>
+          </div>
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-600">NCR</span>
+        </div>
+      </div>
+
+      {/* Charts Grid */}
+      <div className={`grid ${isExportingPDF ? 'grid-cols-2 gap-3' : 'grid-cols-1 lg:grid-cols-2 gap-6'}`}>
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'p-3 rounded-xl border border-slate-300' : 'p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm'}`}>
+          <h3 className={`${isExportingPDF ? 'text-xs mb-1' : 'text-base mb-4'} font-black text-slate-800 dark:text-white`}>Status Penyelesaian Defect</h3>
+          <div className={isExportingPDF ? 'h-44' : 'h-64'}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={statusChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={isExportingPDF ? 35 : 55} outerRadius={isExportingPDF ? 58 : 85} paddingAngle={4} isAnimationActive={!isExportingPDF}>
+                  {statusChartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <RechartsTooltip />
+                <Legend wrapperStyle={{ fontSize: isExportingPDF ? '10px' : '12px' }} />
+              </PieChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
-        {/* GRAFIK 2: KEPATUHAN SLA */}
-        <div className={`grid ${isExportingPDF ? 'grid-cols-3' : 'grid-cols-1 lg:grid-cols-3'} gap-6`}>
-          <div className={`${isExportingPDF ? 'col-span-1' : 'lg:col-span-1'} p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col items-center justify-center ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 dark:border-gray-700'}`}>
-            <h3 className={`text-sm font-bold mb-4 w-full text-left ${isExportingPDF ? 'text-black' : ''}`}>Kepatuhan SLA (Keseluruhan)</h3>
-            {totalSlaCalculated === 0 ? (
-              <p className="text-gray-400 italic py-10 text-xs">Belum ada data</p>
-            ) : (
-              <div className="relative w-32 h-32 mb-4">
-                <svg viewBox="0 0 36 36" className="w-full h-full transform -rotate-90">
-                  {slaDonutData.map((slice, i) => {
-                    const percent = (slice.value / totalSlaCalculated) * 100;
-                    const dashArray = `${percent} ${100 - percent}`;
-                    const dashOffset = 100 - slaPercent;
-                    slaPercent += percent;
-                    return slice.value > 0 ? (
-                      <circle key={i} r="15.91549430918954" cx="18" cy="18" fill="transparent" stroke={slice.color} strokeWidth="4" strokeDasharray={dashArray} strokeDashoffset={dashOffset} />
-                    ) : null;
-                  })}
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className={`text-xl font-bold ${isExportingPDF ? 'text-black' : 'text-gray-800 dark:text-white'}`}>{totalSlaCalculated}</span>
-                </div>
-              </div>
-            )}
-            <div className={`flex gap-2 text-[10px] font-bold w-full justify-center flex-wrap ${isExportingPDF ? 'text-black' : 'text-gray-600 dark:text-gray-300'}`}>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span> Tepat Waktu ({slaOnTime})</div>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> Terlambat ({slaLate})</div>
-            </div>
-          </div>
-
-          <div className={`${isExportingPDF ? 'col-span-2' : 'lg:col-span-2'} p-6 rounded-2xl shadow-sm border border-gray-200 ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 dark:border-gray-700'}`}>
-            <h3 className={`text-sm font-bold mb-4 ${isExportingPDF ? 'text-black' : ''}`}>SLA Berdasarkan Disiplin</h3>
-            {slaDiscArray.length === 0 ? (
-              <p className="text-center text-gray-400 py-10 italic text-xs">Belum ada data</p>
-            ) : (
-              <div className="h-40 flex items-end gap-2 sm:gap-6 border-b border-gray-200 dark:border-gray-700 pb-2 relative">
-                <div className="absolute inset-0 flex flex-col justify-between pointer-events-none border-l border-gray-200 dark:border-gray-700 pl-1 pb-2">
-                   <div className="w-full h-0 border-t border-dashed border-gray-200 dark:border-gray-700 flex items-start"><span className={`text-[10px] text-gray-400 -mt-2 ml-1 ${isExportingPDF ? 'text-gray-600' : ''}`}>{maxSlaDiscipline}</span></div>
-                   <div className="w-full h-0 border-t border-dashed border-gray-200 dark:border-gray-700 flex items-start"><span className={`text-[10px] text-gray-400 -mt-2 ml-1 ${isExportingPDF ? 'text-gray-600' : ''}`}>{Math.ceil(maxSlaDiscipline/2)}</span></div>
-                   <div className="w-full h-0 flex items-end"><span className={`text-[10px] text-gray-400 mb-1 ml-1 ${isExportingPDF ? 'text-gray-600' : ''}`}>0</span></div>
-                </div>
-                {slaDiscArray.map((d, i) => (
-                  <div key={i} className="flex-1 flex flex-col justify-end items-center group relative z-10 h-full pt-6">
-                    {!isExportingPDF && (
-                      <div className="absolute -top-6 bg-gray-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-20">
-                        Total: {d.onTime + d.late} (Tepat: {d.onTime}, Telat: {d.late})
-                      </div>
-                    )}
-                    <div className={`w-full max-w-[30px] flex flex-col justify-end h-full rounded-t-sm overflow-hidden ${isExportingPDF ? 'bg-white border border-gray-300' : 'bg-gray-100 dark:bg-gray-800'}`}>
-                      <div style={{height: `${(d.late / maxSlaDiscipline) * 100}%`}} className="w-full bg-red-500"></div>
-                      <div style={{height: `${(d.onTime / maxSlaDiscipline) * 100}%`}} className="w-full bg-green-500"></div>
-                    </div>
-                    <span className={`text-[9px] font-bold mt-1 truncate w-full text-center ${isExportingPDF ? 'text-black' : 'text-gray-600 dark:text-gray-300'}`} title={d.name}>{d.name.substring(0,6)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'p-3 rounded-xl border border-slate-300' : 'p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm'}`}>
+          <h3 className={`${isExportingPDF ? 'text-xs mb-1' : 'text-base mb-4'} font-black text-slate-800 dark:text-white`}>Kepatuhan Target SLA</h3>
+          <div className={isExportingPDF ? 'h-44' : 'h-64'}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={slaChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={isExportingPDF ? 35 : 55} outerRadius={isExportingPDF ? 58 : 85} paddingAngle={4} isAnimationActive={!isExportingPDF}>
+                  {slaChartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <RechartsTooltip />
+                <Legend wrapperStyle={{ fontSize: isExportingPDF ? '10px' : '12px' }} />
+              </PieChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
-        <div className={`grid ${isExportingPDF ? 'grid-cols-3' : 'grid-cols-1 md:grid-cols-3'} gap-4`}>
-           <div className={`p-4 rounded-xl border border-gray-200 text-center ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 shadow-sm'}`}>
-               <p className="text-xs text-gray-500 font-bold uppercase mb-1">Kategori Minor</p>
-               <p className="text-2xl font-bold text-blue-600">{categories['Minor']}</p>
-           </div>
-           <div className={`p-4 rounded-xl border border-gray-200 text-center ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 shadow-sm'}`}>
-               <p className="text-xs text-gray-500 font-bold uppercase mb-1">Kategori Major</p>
-               <p className="text-2xl font-bold text-orange-500">{categories['Major']}</p>
-           </div>
-           <div className={`p-4 rounded-xl border border-gray-200 text-center ${isExportingPDF ? 'bg-white shadow-none' : 'bg-white dark:bg-gray-800 shadow-sm'}`}>
-               <p className="text-xs text-gray-500 font-bold uppercase mb-1">Kategori Hard (NCR)</p>
-               <p className="text-2xl font-bold text-red-600">{categories['Hard (NCR)']}</p>
-           </div>
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'p-3 rounded-xl border border-slate-300' : 'p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm'}`}>
+          <h3 className={`${isExportingPDF ? 'text-xs mb-1' : 'text-base mb-4'} font-black text-slate-800 dark:text-white`}>Temuan per Disiplin</h3>
+          <div className={isExportingPDF ? 'h-44' : 'h-72'}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={discArray}>
+                <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                <RechartsTooltip />
+                <Legend wrapperStyle={{ fontSize: isExportingPDF ? '10px' : '12px' }} />
+                <Bar dataKey="open" name="Open" stackId="a" fill="#f43f5e" isAnimationActive={!isExportingPDF} />
+                <Bar dataKey="in_progress" name="Proses" stackId="a" fill="#f59e0b" isAnimationActive={!isExportingPDF} />
+                <Bar dataKey="close" name="Close" stackId="a" fill="#10b981" isAnimationActive={!isExportingPDF} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className={`bg-white dark:bg-slate-800 ${isExportingPDF ? 'p-3 rounded-xl border border-slate-300' : 'p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm'}`}>
+          <h3 className={`${isExportingPDF ? 'text-xs mb-1' : 'text-base mb-4'} font-black text-slate-800 dark:text-white`}>SLA per Disiplin</h3>
+          <div className={isExportingPDF ? 'h-44' : 'h-72'}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={slaDiscArray}>
+                <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                <RechartsTooltip />
+                <Legend wrapperStyle={{ fontSize: isExportingPDF ? '10px' : '12px' }} />
+                <Bar dataKey="onTime" name="On Time" fill="#10b981" radius={[4, 4, 0, 0]} isAnimationActive={!isExportingPDF} />
+                <Bar dataKey="late" name="Overdue" fill="#f43f5e" radius={[4, 4, 0, 0]} isAnimationActive={!isExportingPDF} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// --- DATA MASTER VIEW (Data Project & Buildings) ---
-function DataMasterView({ db, setDb, darkMode, currentUser }) {
-  const isAdmin = currentUser?.role === 'Admin';
-  const inputClass = `w-full p-2.5 rounded-lg border focus:ring-2 focus:ring-[#0F4C81] outline-none transition-all text-sm ${darkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-300'} ${!isAdmin ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed opacity-80' : ''}`;
-  const labelClass = "block text-sm font-bold mb-1.5 text-gray-800 dark:text-gray-200";
+// --- SHARED PRINT PREVIEW MODAL (NCR FORM & DEFECT FORM) ---
+function DocumentFormPreviewModal({ data, db, onClose }) {
+  const [isExporting, setIsExporting] = useState(false);
 
-  const [pbMode, setPbMode] = useState('create_new');
-  const [activeParentId, setActiveParentId] = useState(null); 
-  const [isNewProject, setIsNewProject] = useState((db.projects || []).length === 0);
+  if (!data) return null;
 
-  const [projectForm, setProjectForm] = useState({ project_id: '', project_name: '', project_address: '', building_name: '' });
-  const [tempFloorplans, setTempFloorplans] = useState([]);
-  const [fpFileInput, setFpFileInput] = useState(null);
-  const [fpNameInput, setFpNameInput] = useState('');
+  const isNCR = data.defect_category === 'Hard (NCR)';
+  const bldg = (db.buildings || []).find(b => b.id === data.building_id);
+  const proj = bldg ? (db.projects || []).find(p => p.id === bldg.project_id) : (db.projects || []).find(p => p.id === data.project_id);
+  const fp = bldg && bldg.floorplans ? bldg.floorplans.find(f => String(f.id) === String(data.floorplan_id)) : null;
 
-  const resetPbForm = () => {
-    setPbMode('create_new'); 
-    setActiveParentId(null); 
-    setIsNewProject((db.projects || []).length === 0);
-    setProjectForm({ project_id: '', project_name: '', project_address: '', building_name: '' });
-    setTempFloorplans([]); 
-    setFpFileInput(null); 
-    setFpNameInput('');
-  };
+  const projectName = data.project_name || (proj ? proj.project_name : '-');
+  const buildingName = data.building_name || (bldg ? bldg.building_name : '-');
+  const floorplanName = data.floorplan_name || (fp ? fp.name.replace(/\.[^/.]+$/, "") : '-');
+  const floorplanImage = data.floorplan_image || data.marked_floorplan_image || (fp ? fp.image : null);
 
-  const handleProjectChange = (e) => {
-    const val = e.target.value;
-    if (val === 'NEW') { setIsNewProject(true); setProjectForm({ ...projectForm, project_id: '', project_name: '', project_address: '' }); } 
-    else if (val === '') { setIsNewProject(false); setProjectForm({ ...projectForm, project_id: '', project_name: '', project_address: '' }); } 
-    else {
-      setIsNewProject(false);
-      const selectedProj = (db.projects || []).find(p => p.id === parseInt(val));
-      if (selectedProj) setProjectForm({ ...projectForm, project_id: selectedProj.id, project_name: selectedProj.project_name, project_address: selectedProj.project_address });
-    }
-  };
+  const actionsForDefect = (db.actions || []).filter(a => a.defect_id === data.id);
+  const latestAction = actionsForDefect.length > 0 ? actionsForDefect[actionsForDefect.length - 1] : null;
 
-  const handleAddTempFloorplan = async () => {
-    if (!fpNameInput.trim()) { alert("Masukkan nama denah terlebih dahulu."); return; }
-    if (!fpFileInput) { alert("Pilih file gambar denah terlebih dahulu."); return; }
+  const currentStatus = data.current_status || (latestAction ? latestAction.status : 'Open');
+  const closingDate = data.action_date || (latestAction ? latestAction.action_date : '-');
+  const actionNote = data.action_note !== undefined ? data.action_note : (latestAction ? latestAction.action_note : '');
+  const actionPhotos = data.action_photos || (latestAction ? latestAction.action_photo : []) || [];
+  const defectPhotos = data.defect_photo || [];
 
-    const newFileName = `${fpNameInput.trim()}.jpg`; 
-    const base64Image = await compressImage(fpFileInput); 
+  const reporterName = (db.inspectors || []).find(i => String(i.id) === String(data.inspector_id))?.name || '-';
+  const closingInspectorId = data.inspector_edit || (latestAction ? latestAction.inspector_edit : null);
+  const closingInspectorName = (db.inspectors || []).find(i => String(i.id) === String(closingInspectorId))?.name || '-';
 
-    const newFp = { id: Date.now(), name: newFileName, image: base64Image };
-    setTempFloorplans([...tempFloorplans, newFp]);
-    setFpFileInput(null); setFpNameInput('');
-    document.getElementById('upload_floorplan_input').value = "";
-  };
+  const slaInfo = calculateSlaStatus(data.defect_date, data.sla_days, closingDate);
 
-  const handleSaveProjectBuilding = async (e) => {
-    if (e) e.preventDefault();
-    try {
-      if (pbMode === 'create_new' || pbMode === 'add_building') {
-        let currentProjectId = projectForm.project_id;
-        let newProjData = null;
-        
-        if (isNewProject && pbMode === 'create_new') {
-          if (!projectForm.project_name || projectForm.project_name.trim() === '') return alert("Peringatan: Lengkapi nama proyek baru!");
-          const payloadProj = { project_name: projectForm.project_name.trim(), project_address: projectForm.project_address || '-' };
-          const resProj = await fetchSupabase('projects', 'POST', payloadProj);
-          newProjData = Array.isArray(resProj) ? resProj[0] : resProj;
-          if (!newProjData) throw new Error("Data Proyek tidak kembali dari server. Pastikan RLS dimatikan.");
-          currentProjectId = newProjData.id;
-        } else {
-          if (!currentProjectId || currentProjectId === '') return alert("Peringatan: Pilih proyek terlebih dahulu dari dropdown!");
-        }
-        
-        if (!projectForm.building_name || projectForm.building_name.trim() === '') return alert("Peringatan: Lengkapi nama bangunan!");
-        const payloadBldg = { project_id: parseInt(currentProjectId), building_name: projectForm.building_name.trim(), floorplans: tempFloorplans };
-        const resBldg = await fetchSupabase('buildings', 'POST', payloadBldg);
-        const newBldgData = Array.isArray(resBldg) ? resBldg[0] : resBldg;
-        if (!newBldgData) throw new Error("Data Bangunan tidak kembali dari server. Pastikan RLS dimatikan.");
-        
-        setDb(prev => {
-          const nextProjects = newProjData ? [...(prev.projects || []), newProjData] : (prev.projects || []);
-          return { ...prev, projects: nextProjects, buildings: [...(prev.buildings || []), newBldgData] };
-        });
-        
-        alert(isNewProject && pbMode === 'create_new' ? "Data Proyek & Bangunan berhasil disimpan!" : "Bangunan berhasil ditambahkan!");
-        resetPbForm();
-
-      } else if (pbMode === 'edit_project') {
-        if (!projectForm.project_name || projectForm.project_name.trim() === '') return alert("Peringatan: Lengkapi nama proyek!");
-        const payloadProj = { project_name: projectForm.project_name.trim(), project_address: projectForm.project_address || '-' };
-        const resProj = await fetchSupabase(`projects?id=eq.${activeParentId}`, 'PATCH', payloadProj);
-        const updatedProj = Array.isArray(resProj) ? resProj[0] : resProj;
-        if (!updatedProj) throw new Error("Gagal mengupdate proyek. Pastikan RLS dimatikan.");
-        
-        setDb(prev => ({ ...prev, projects: (prev.projects || []).map(p => p.id === activeParentId ? updatedProj : p) }));
-        alert("Proyek berhasil diupdate!");
-        resetPbForm();
-
-      } else if (pbMode === 'edit_building') {
-        if (!projectForm.building_name || projectForm.building_name.trim() === '') return alert("Peringatan: Lengkapi nama bangunan!");
-        const payloadBldg = { building_name: projectForm.building_name.trim(), floorplans: tempFloorplans };
-        const resBldg = await fetchSupabase(`buildings?id=eq.${activeParentId}`, 'PATCH', payloadBldg);
-        const updatedBldg = Array.isArray(resBldg) ? resBldg[0] : resBldg;
-        if (!updatedBldg) throw new Error("Gagal mengupdate bangunan. Pastikan RLS dimatikan.");
-        
-        setDb(prev => ({ ...prev, buildings: (prev.buildings || []).map(b => b.id === activeParentId ? updatedBldg : b) }));
-        alert("Bangunan berhasil diupdate!");
-        resetPbForm();
+  const handlePrintPDF = () => {
+    setIsExporting(true);
+    setTimeout(() => {
+      const element = document.getElementById('pqcs-doc-form-printable');
+      const prefix = isNCR ? 'NCR_FORM' : 'DEFECT_FORM';
+      const opt = {
+        margin: [0, 0, 0, 0],
+        filename: `${prefix}_${data.defect_code || 'Report'}_${new Date().toISOString().slice(0,10)}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: {
+          scale: 2,
+          useCORS: true,
+          width: 794,
+          height: 1122,
+          windowWidth: 794,
+          windowHeight: 1122,
+          x: 0,
+          y: 0,
+          scrollX: 0,
+          scrollY: 0
+        },
+        jsPDF: { unit: 'px', format: [794, 1122], orientation: 'portrait', hotfixes: ['px_scaling'] }
+      };
+      const execute = (h2p) => {
+        h2p().set(opt).from(element).save().then(() => setIsExporting(false));
+      };
+      if (window.html2pdf) {
+        execute(window.html2pdf);
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+        script.onload = () => execute(window.html2pdf);
+        document.head.appendChild(script);
       }
-    } catch (err) { alert("Error Menyimpan Data: " + err.message); }
+    }, 350);
   };
 
-  const handleDeleteBuilding = async (bId) => {
-    if(!window.confirm("Yakin hapus bangunan ini?")) return;
-    try {
-      await fetchSupabase(`buildings?id=eq.${bId}`, 'DELETE');
-    } catch(err) { console.warn("Peringatan hapus bangunan:", err.message); }
-    setDb(prev => ({ ...prev, buildings: (prev.buildings || []).filter(bld => bld.id !== bId) }));
-    if(pbMode === 'edit_building' && activeParentId === bId) resetPbForm();
+  // Palet Warna & Tipografi sesuai gambar lampiran (image_8c85c8.png) untuk NCR & DEFECT FORM
+  const lightBlueBar = '#D9E8F6';
+  const borderColor = '#0F172A';
+
+  const labelCellStyle = {
+    backgroundColor: '#FFFFFF',
+    color: '#0F172A',
+    fontWeight: 700,
+    fontSize: '8.5pt',
+    padding: '3.5px 8px',
+    borderRight: `1.2px solid ${borderColor}`,
+    borderBottom: `1.2px solid ${borderColor}`,
+    textTransform: 'uppercase',
+    lineHeight: '1.2'
   };
 
-  const handleDeleteProject = async (pId) => {
-    if(!window.confirm("Yakin hapus proyek? Semua bangunan harus dikosongkan dahulu.")) return;
-    try {
-      await fetchSupabase(`buildings?project_id=eq.${pId}`, 'DELETE');
-      await fetchSupabase(`projects?id=eq.${pId}`, 'DELETE');
-    } catch(err) { console.warn("Peringatan hapus proyek:", err.message); }
-    setDb(prev => ({ ...prev, projects: (prev.projects || []).filter(proj => proj.id !== pId), buildings: (prev.buildings || []).filter(bld => bld.project_id !== pId) }));
-    if(pbMode === 'edit_project' && activeParentId === pId) resetPbForm();
+  const valueCellStyle = {
+    backgroundColor: '#FFFFFF',
+    color: '#0F172A',
+    fontWeight: 600,
+    fontSize: '8.5pt',
+    padding: '3.5px 8px',
+    borderBottom: `1.2px solid ${borderColor}`,
+    lineHeight: '1.2'
+  };
+
+  const sectionBannerStyle = {
+    backgroundColor: lightBlueBar,
+    color: '#0F172A',
+    fontWeight: 700,
+    fontSize: '9pt',
+    textAlign: 'center',
+    padding: '4px 8px',
+    letterSpacing: '0.03em',
+    textTransform: 'uppercase',
+    borderBottom: `1.2px solid ${borderColor}`
   };
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 overflow-hidden">
-      <div className="p-4 md:p-6">
-          <div className="space-y-8">
-            <div className="max-w-4xl mx-auto">
-              {pbMode !== 'create_new' && (
-                <div className="mb-4 px-4 py-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl flex justify-between items-center shadow-sm">
-                  <div className="flex items-center gap-2 text-blue-800 dark:text-blue-300"><Edit size={18} /><span className="font-bold text-sm">Mode Edit</span></div>
-                  <button onClick={resetPbForm} disabled={!isAdmin} className={`text-xs px-3 py-1.5 rounded-lg font-medium ${isAdmin ? 'bg-white border border-blue-200 text-blue-700 hover:bg-blue-100' : 'bg-gray-200 text-gray-400 cursor-not-allowed border-gray-200'}`}>Batal / Kembali</button>
-                </div>
-              )}
+    <div className="fixed inset-0 z-50 bg-slate-900/75 backdrop-blur-sm flex flex-col overflow-hidden animate-in fade-in duration-200">
+      <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white/95 dark:bg-slate-900/95 backdrop-blur-md shadow-sm print:hidden shrink-0 z-10">
+        <button onClick={onClose} className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 transition-colors">
+          <X size={18} strokeWidth={2.5}/> Tutup Preview
+        </button>
+        <div className="flex items-center gap-3">
+          <span className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider ${isNCR ? 'bg-blue-100 text-[#0F4C81]' : 'bg-blue-100 text-blue-800'}`}>
+            {isNCR ? 'NCR FORM (A4)' : 'DEFECT FORM (A4)'}
+          </span>
+          <button onClick={handlePrintPDF} disabled={isExporting} className="px-5 py-2.5 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md transition-all disabled:opacity-70">
+            <Printer size={18} strokeWidth={2.5}/> {isExporting ? 'Mengekspor PDF...' : 'Print / Save PDF'}
+          </button>
+        </div>
+      </div>
 
-              <div className="border border-gray-200 dark:border-gray-700 rounded-xl p-5 md:p-8 bg-white dark:bg-gray-800 shadow-sm relative transition-all">
-                <div className={pbMode === 'create_new' ? "mb-8" : "mb-4"}>
-                  <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Building size={20} className="text-[#0F4C81]"/> Data Proyek</h3>
-                  <div className="space-y-4">
-                    <div>
-                      <label className={labelClass}>Nama Proyek</label>
-                      {pbMode === 'edit_project' ? (
-                        <input type="text" className={inputClass} disabled={!isAdmin} value={projectForm.project_name} onChange={e => setProjectForm({...projectForm, project_name: e.target.value})} />
-                      ) : pbMode === 'edit_building' || pbMode === 'add_building' ? (
-                        <input type="text" className={`${inputClass} bg-gray-100 cursor-not-allowed`} disabled={!isAdmin} value={projectForm.project_name} readOnly />
-                      ) : !isNewProject ? (
-                        <select className={inputClass} disabled={!isAdmin} value={projectForm.project_id || ''} onChange={handleProjectChange}>
-                          <option value="" disabled>-- Pilih Proyek --</option>
-                          {(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
-                          {isAdmin && <option value="NEW" className="font-bold text-blue-600">+ Buat Proyek Baru</option>}
-                        </select>
-                      ) : (
-                        <div className="flex gap-2">
-                          <input type="text" className={inputClass} disabled={!isAdmin} placeholder="Nama Proyek Baru" value={projectForm.project_name} onChange={e => setProjectForm({...projectForm, project_name: e.target.value})} />
-                          {(db.projects || []).length > 0 && <button type="button" onClick={() => setIsNewProject(false)} disabled={!isAdmin} className={`px-4 py-2 rounded-lg text-sm font-bold ${isAdmin ? 'bg-gray-200 hover:bg-gray-300 text-gray-800' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>Batal</button>}
-                        </div>
-                      )}
+      <div className="flex-1 overflow-y-auto p-4 md:p-6 print:p-0 flex justify-center items-start">
+        {/* Kertas A4 (794px x 1122px @ 96dpi) fit 1 halaman A4 tanpa terpotong */}
+        <div
+          id="pqcs-doc-form-printable"
+          style={{
+            width: '794px',
+            height: '1122px',
+            backgroundColor: '#FFFFFF',
+            color: '#0F172A',
+            fontFamily: 'Arial, Helvetica, sans-serif',
+            boxSizing: 'border-box',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: '18px 28px',
+            overflow: 'hidden'
+          }}
+          className="shadow-2xl print:shadow-none shrink-0"
+        >
+          {isNCR ? (
+            /* --- TATA LETAK PERSIS SESUAI GAMBAR LAMPIRAN NCR (image_8c85c8.png) --- */
+            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {/* Top Left Small Header */}
+              <div style={{ fontSize: '8.5pt', fontStyle: 'italic', color: '#1E293B', marginBottom: '-4px' }}>
+                PROJECT QUALITY CONTROL SYSTEM
+              </div>
+
+              {/* Main Banner Title */}
+              <div style={{
+                border: `1.5px solid ${borderColor}`,
+                backgroundColor: lightBlueBar,
+                color: '#0F172A',
+                padding: '6px 12px',
+                textAlign: 'center',
+                fontSize: '14pt',
+                fontWeight: 800,
+                letterSpacing: '0.03em',
+                textTransform: 'uppercase'
+              }}>
+                NON CONFORMANCE REPORT (NCR)
+              </div>
+
+              {/* ID RECORD & PROJECT NAME Full-Width Table */}
+              <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <tbody>
+                    <tr>
+                      <td style={{ ...labelCellStyle, width: '24%' }}>ID RECORD</td>
+                      <td style={{ ...valueCellStyle, fontWeight: 700 }}>{data.defect_code || '-'}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ ...labelCellStyle, borderBottom: 'none' }}>PROJECT NAME</td>
+                      <td style={{ ...valueCellStyle, borderBottom: 'none', fontWeight: 700 }}>{projectName}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ROW 2: FINDING (LEFT) & DEFECT LOCATION (RIGHT) */}
+              <div style={{ display: 'grid', gridTemplateColumns: '48% 50.5%', justifyContent: 'space-between', alignItems: 'stretch' }}>
+                {/* LEFT: FINDING */}
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>FINDING</div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <tbody>
+                      <tr>
+                        <td style={{ ...labelCellStyle, width: '49%' }}>OBJECT / BUILDING</td>
+                        <td style={valueCellStyle}>{buildingName}</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>DICIPLINE</td>
+                        <td style={valueCellStyle}>{data.discipline || '-'}</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>FINDING CATEGORY</td>
+                        <td style={{ ...valueCellStyle, fontWeight: 700 }}>{data.defect_category || '-'}</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>REPORT DATE</td>
+                        <td style={valueCellStyle}>{data.defect_date || '-'}</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>DETAIL FINDING</td>
+                        <td style={valueCellStyle}>{data.defect_type || '-'}</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>INSPECTOR NAME</td>
+                        <td style={valueCellStyle}>{reporterName}</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>TARGET CLOSE (SLA)</td>
+                        <td style={valueCellStyle}>{data.sla_days !== undefined ? `${data.sla_days} Hari` : '-'} ({slaInfo.text})</td>
+                      </tr>
+                      <tr>
+                        <td style={labelCellStyle}>POSITION/LAYOUT</td>
+                        <td style={valueCellStyle}>{floorplanName}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div style={{ padding: '4px 8px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: '46px' }}>
+                    <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', marginBottom: '2px' }}>
+                      FINDING NOTE :
                     </div>
-                    <div><label className={labelClass}>Alamat Proyek (Opsional)</label><textarea rows="3" disabled={!isAdmin} className={`${inputClass} ${(!isNewProject && pbMode !== 'edit_project') ? 'bg-gray-100 cursor-not-allowed' : ''}`} value={projectForm.project_address} onChange={e => setProjectForm({...projectForm, project_address: e.target.value})} readOnly={!isNewProject && pbMode !== 'edit_project'}></textarea></div>
+                    <div style={{ fontSize: '8.5pt', color: '#0F172A', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.25' }}>
+                      {data.notes || ''}
+                    </div>
                   </div>
                 </div>
 
-                {(pbMode === 'create_new' || pbMode === 'add_building' || pbMode === 'edit_building') && (
-                  <div className={pbMode === 'create_new' ? "pt-6 border-t dark:border-gray-700" : "pt-4 border-t dark:border-gray-700 mt-4"}>
-                    <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Home size={20} className="text-[#0F4C81]"/> Informasi Bangunan</h3>
-                    <div className="space-y-4">
-                      <div><label className={labelClass}>Nama Bangunan</label><input type="text" disabled={!isAdmin} className={inputClass} placeholder="Blok A" value={projectForm.building_name} onChange={e => setProjectForm({...projectForm, building_name: e.target.value})} /></div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border border-gray-200 p-4 rounded-xl bg-gray-50">
-                        <div className="col-span-1 md:col-span-2"><label className="block text-sm font-bold text-gray-700 mb-1">Tambah Denah (Opsional)</label></div>
-                        <div><label className="block text-sm font-medium mb-1">1. Ketik Nama Denah</label><input type="text" disabled={!isAdmin} className={`w-full p-2 rounded border ${!isAdmin ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white'}`} placeholder="Lantai 1" value={fpNameInput} onChange={e => setFpNameInput(e.target.value)} /></div>
-                        <div>
-                          <label className="block text-sm font-medium mb-1">2. Pilih File Denah</label>
-                          <label className={`inline-flex items-center justify-center text-sm px-6 py-2 font-medium border rounded-lg w-full text-center ${isAdmin ? 'bg-white cursor-pointer hover:bg-gray-100' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
-                            {fpFileInput ? 'File Terpilih ✓' : 'Pilih File Gambar'}
-                            <input type="file" disabled={!isAdmin} id="upload_floorplan_input" accept="image/*" className="hidden" onChange={e => setFpFileInput(e.target.files[0])} />
-                          </label>
-                        </div>
-                        <div className="col-span-1 md:col-span-2">
-                           <button type="button" disabled={!isAdmin} onClick={handleAddTempFloorplan} className={`w-full py-2 rounded-lg font-medium text-sm ${isAdmin ? 'bg-[#5cb85c] hover:bg-[#4cae4c] text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}>+ Simpan Denah Sementara</button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-6">
-                      <div className="bg-white border border-gray-200 p-4 rounded-xl min-h-[120px]">
-                        {tempFloorplans.length > 0 ? (
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            {tempFloorplans.map((fp) => (
-                              <div key={fp.id} className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-gray-50 relative group">
-                                <div className="h-24 bg-white flex items-center justify-center p-2"><img src={fp.image} alt={fp.name} className="max-h-full max-w-full object-contain" /></div>
-                                <div className="p-2 flex justify-between items-center border-t border-gray-200">
-                                  <span className="text-[10px] font-medium text-gray-600 truncate pr-2" title={fp.name}>{fp.name}</span>
-                                  <button type="button" disabled={!isAdmin} onClick={() => setTempFloorplans(tempFloorplans.filter(f=>f.id!==fp.id))} className={`p-1 ${isAdmin ? 'text-red-500 hover:bg-red-50' : 'text-gray-400 cursor-not-allowed'}`}><Trash2 size={12}/></button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : <div className="flex items-center justify-center h-full text-gray-400 text-sm italic">Belum ada denah</div>}
-                      </div>
-                    </div>
+                {/* RIGHT: DEFECT LOCATION */}
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>DEFECT LOCATION</div>
+                  <div style={{ flex: 1, padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '220px' }}>
+                    {floorplanImage ? (
+                      <img src={floorplanImage} alt="Defect Location" style={{ maxHeight: '225px', maxWidth: '100%', objectFit: 'contain' }} />
+                    ) : (
+                      <span style={{ fontSize: '8.5pt', color: '#94A3B8' }}></span>
+                    )}
                   </div>
-                )}
-
-                <div className="mt-8 pt-4 border-t dark:border-gray-700 flex justify-end">
-                  <button type="button" disabled={!isAdmin} onClick={handleSaveProjectBuilding} className={`px-8 py-3 rounded-lg font-bold flex items-center gap-2 shadow-md ${!isAdmin ? 'bg-gray-300 text-gray-500 cursor-not-allowed shadow-none' : pbMode.includes('edit') ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-[#0F4C81] hover:bg-blue-800 text-white'}`}>
-                    <Save size={18}/> Simpan
-                  </button>
                 </div>
               </div>
-            </div>
 
-            <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-700 shadow-sm overflow-hidden mt-8">
-              <div className="p-5 flex justify-between items-center border-b dark:border-gray-700 bg-gray-50"><h3 className="text-lg font-bold flex items-center gap-2"><Database size={20} className="text-[#0F4C81]" /> List Proyek & Bangunan</h3></div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm border-collapse min-w-[800px]">
-                  <thead className="bg-gray-100 border-b"><tr><th className="p-4 w-12 text-center">No</th><th className="p-4 w-1/3">Informasi Proyek</th><th className="p-4">Daftar Bangunan & Denah</th><th className="p-4 text-center w-32">Aksi Proyek</th></tr></thead>
-                  <tbody>
-                    {(db.projects || []).length === 0 ? (
-                      <tr><td colSpan="4" className="text-center p-10 text-gray-500">Database Kosong.</td></tr>
-                    ) : (
-                      (db.projects || []).map((p, index) => (
-                        <tr key={p.id} className="border-b align-top hover:bg-gray-50">
-                          <td className="p-4 text-center font-bold text-gray-500">{index + 1}</td>
-                          <td className="p-4"><h4 className="font-bold text-[#0F4C81] text-base mb-1">{p.project_name}</h4><p className="text-xs text-gray-500">{p.project_address}</p></td>
-                          <td className="p-4">
-                            {(db.buildings || []).filter(b => b.project_id === p.id).length === 0 ? (
-                              <p className="text-xs text-gray-400 italic mb-2">Belum ada bangunan.</p>
-                            ) : (
-                              <table className="w-full text-xs border border-gray-200 rounded-lg overflow-hidden mb-3 bg-white">
-                                <thead className="bg-gray-50"><tr><th className="p-2 border-b text-left">Nama Bangunan</th><th className="p-2 border-b text-center">Denah</th><th className="p-2 border-b text-center">Aksi</th></tr></thead>
-                                <tbody>
-                                  {(db.buildings || []).filter(b => b.project_id === p.id).map(b => (
-                                    <tr key={b.id} className="border-b last:border-0 hover:bg-gray-50">
-                                      <td className="p-2 font-medium">{b.building_name}</td>
-                                      <td className="p-2 text-center"><span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold">{b.floorplans?.length || 0}</span></td>
-                                      <td className="p-2 text-center flex justify-center gap-1">
-                                        <button disabled={!isAdmin} onClick={() => {
-                                          const proj = (db.projects || []).find(proj => proj.id === b.project_id);
-                                          setPbMode('edit_building'); setActiveParentId(b.id); setIsNewProject(false);
-                                          setProjectForm({ project_id: proj?.id, project_name: proj?.project_name || '', project_address: proj?.project_address || '', building_name: b.building_name });
-                                          setTempFloorplans(b.floorplans || []); window.scrollTo({ top: 0, behavior: 'smooth' });
-                                        }} className={`px-2 py-1 rounded ${isAdmin ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-400 cursor-not-allowed'}`}><Edit size={14}/></button>
-                                        <button disabled={!isAdmin} onClick={() => handleDeleteBuilding(b.id)} className={`px-2 py-1 rounded ${isAdmin ? 'text-red-500 hover:bg-red-50' : 'text-gray-400 cursor-not-allowed'}`}><Trash2 size={14}/></button>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                            <button disabled={!isAdmin} onClick={() => { setPbMode('add_building'); setActiveParentId(p.id); setIsNewProject(false); setProjectForm({ project_id: p.id, project_name: p.project_name, project_address: p.project_address, building_name: '' }); setTempFloorplans([]); window.scrollTo({ top: 0, behavior: 'smooth' }); }} className={`text-xs font-bold flex items-center gap-1 px-3 py-1.5 rounded-md border ${isAdmin ? 'text-[#5cb85c] hover:text-[#4cae4c] bg-green-50 border-green-200' : 'text-gray-400 bg-gray-100 border-gray-200 cursor-not-allowed'}`}><Plus size={14}/> Tambah Bangunan</button>
-                          </td>
-                          <td className="p-4 text-center align-middle">
-                            <div className="flex justify-center gap-2">
-                              <button disabled={!isAdmin} onClick={() => { setPbMode('edit_project'); setActiveParentId(p.id); setIsNewProject(true); setProjectForm({ project_id: p.id, project_name: p.project_name, project_address: p.project_address, building_name: '' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }} className={`px-3 py-2 rounded-lg border ${isAdmin ? 'text-blue-600 border-blue-200 bg-blue-50 hover:bg-blue-100' : 'text-gray-400 border-gray-200 bg-gray-100 cursor-not-allowed'}`}><Edit size={14}/></button>
-                              <button disabled={!isAdmin} onClick={() => handleDeleteProject(p.id)} className={`px-3 py-2 rounded-lg border ${isAdmin ? 'text-red-500 border-red-200 bg-red-50 hover:bg-red-100' : 'text-gray-400 border-gray-200 bg-gray-100 cursor-not-allowed'}`}><Trash2 size={14}/></button>
-                            </div>
-                          </td>
+              {/* ROW 3: ACTION / CORRECTION FULL-WIDTH BANNER + 2-COLUMN BOXES */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
+                <div style={{
+                  border: `1.5px solid ${borderColor}`,
+                  backgroundColor: lightBlueBar,
+                  color: '#0F172A',
+                  fontWeight: 700,
+                  fontSize: '9pt',
+                  textAlign: 'center',
+                  padding: '4px 8px',
+                  letterSpacing: '0.03em',
+                  textTransform: 'uppercase',
+                  marginBottom: '4px'
+                }}>
+                  ACTION / CORRECTION
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '48% 50.5%', justifyContent: 'space-between', alignItems: 'stretch' }}>
+                  {/* Left: Status, Closing Date, Inspector Name */}
+                  <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <tbody>
+                        <tr>
+                          <td style={{ ...labelCellStyle, width: '49%' }}>STATUS FINDING</td>
+                          <td style={{ ...valueCellStyle, fontWeight: 700, textTransform: 'uppercase' }}>{currentStatus}</td>
                         </tr>
-                      ))
-                    )}
+                        <tr>
+                          <td style={labelCellStyle}>CLOSING DATE</td>
+                          <td style={valueCellStyle}>{closingDate || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td style={{ ...labelCellStyle, borderBottom: 'none' }}>INSPECTOR NAME</td>
+                          <td style={{ ...valueCellStyle, borderBottom: 'none' }}>{closingInspectorName}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Right: ACTION NOTE */}
+                  <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF', padding: '4px 8px', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', marginBottom: '2px' }}>
+                      ACTION NOTE :
+                    </div>
+                    <div style={{ fontSize: '8.5pt', color: '#0F172A', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.25' }}>
+                      {actionNote || ''}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ROW 4: PHOTO DEFECT / FINDING (2 COLUMNS, EACH STACKED PHOTO 1 ON TOP OF PHOTO 2) */}
+              <div style={{ display: 'grid', gridTemplateColumns: '48% 50.5%', justifyContent: 'space-between', alignItems: 'stretch' }}>
+                {/* LEFT PHOTO BOX: BEFORE / DEFECT */}
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>PHOTO DEFECT / FINDING</div>
+                  {/* Photo 1 */}
+                  <div style={{ height: '162px', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {defectPhotos[0] ? (
+                      <img src={defectPhotos[0]} alt="Defect Photo 1" style={{ maxHeight: '152px', maxWidth: '100%', objectFit: 'contain' }} />
+                    ) : null}
+                  </div>
+                  <div style={{ borderBottom: `1.2px solid ${borderColor}`, textAlign: 'center', padding: '2.5px', fontSize: '8.5pt', fontWeight: 600, color: '#0F172A' }}>
+                    Photo 1
+                  </div>
+                  {/* Photo 2 */}
+                  <div style={{ height: '162px', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {defectPhotos[1] ? (
+                      <img src={defectPhotos[1]} alt="Defect Photo 2" style={{ maxHeight: '152px', maxWidth: '100%', objectFit: 'contain' }} />
+                    ) : null}
+                  </div>
+                  <div style={{ textAlign: 'center', padding: '2.5px', fontSize: '8.5pt', fontWeight: 600, color: '#0F172A' }}>
+                    Photo 2
+                  </div>
+                </div>
+
+                {/* RIGHT PHOTO BOX: AFTER / ACTION */}
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>PHOTO DEFECT / FINDING</div>
+                  {/* Photo 1 */}
+                  <div style={{ height: '162px', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {actionPhotos[0] ? (
+                      <img src={actionPhotos[0]} alt="Action Photo 1" style={{ maxHeight: '152px', maxWidth: '100%', objectFit: 'contain' }} />
+                    ) : null}
+                  </div>
+                  <div style={{ borderBottom: `1.2px solid ${borderColor}`, textAlign: 'center', padding: '2.5px', fontSize: '8.5pt', fontWeight: 600, color: '#0F172A' }}>
+                    Photo 1
+                  </div>
+                  {/* Photo 2 */}
+                  <div style={{ height: '162px', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {actionPhotos[1] ? (
+                      <img src={actionPhotos[1]} alt="Action Photo 2" style={{ maxHeight: '152px', maxWidth: '100%', objectFit: 'contain' }} />
+                    ) : null}
+                  </div>
+                  <div style={{ textAlign: 'center', padding: '2.5px', fontSize: '8.5pt', fontWeight: 600, color: '#0F172A' }}>
+                    Photo 2
+                  </div>
+                </div>
+              </div>
+
+              {/* ROW 5: CLOSING SIGNATURE TABLE */}
+              <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: '9pt' }}>
+                  <tbody>
+                    <tr>
+                      <td rowSpan={3} style={{
+                        width: '25.5%',
+                        borderRight: `1.5px solid ${borderColor}`,
+                        fontWeight: 700,
+                        fontSize: '10.5pt',
+                        color: '#0F172A',
+                        textAlign: 'center',
+                        verticalAlign: 'middle',
+                        padding: '6px'
+                      }}>
+                        Closing Signature
+                      </td>
+                      <td style={{ width: '24.8%', backgroundColor: lightBlueBar, fontWeight: 700, padding: '4px', borderRight: `1.2px solid ${borderColor}`, borderBottom: `1.2px solid ${borderColor}` }}>
+                        CONTRACTOR
+                      </td>
+                      <td style={{ width: '24.8%', backgroundColor: lightBlueBar, fontWeight: 700, padding: '4px', borderRight: `1.2px solid ${borderColor}`, borderBottom: `1.2px solid ${borderColor}` }}>
+                        CM CONSUNTANT
+                      </td>
+                      <td style={{ width: '24.9%', backgroundColor: lightBlueBar, fontWeight: 700, padding: '4px', borderBottom: `1.2px solid ${borderColor}` }}>
+                        OWNER
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style={{ height: '66px', borderRight: `1.2px solid ${borderColor}`, borderBottom: `1.2px solid ${borderColor}` }}></td>
+                      <td style={{ height: '66px', borderRight: `1.2px solid ${borderColor}`, borderBottom: `1.2px solid ${borderColor}` }}></td>
+                      <td style={{ height: '66px', borderBottom: `1.2px solid ${borderColor}` }}></td>
+                    </tr>
+                    <tr style={{ fontWeight: 700, fontSize: '8.5pt' }}>
+                      <td style={{ padding: '3.5px', borderRight: `1.2px solid ${borderColor}` }}>PM / SM</td>
+                      <td style={{ padding: '3.5px', borderRight: `1.2px solid ${borderColor}` }}>CM</td>
+                      <td style={{ padding: '3.5px' }}>PM</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
             </div>
+          ) : (
+            /* --- DEFECT FORM (NON-NCR) --- */
+            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ fontSize: '8.5pt', fontStyle: 'italic', color: '#1E293B', marginBottom: '-4px' }}>
+                PROJECT QUALITY CONTROL SYSTEM
+              </div>
+              <div style={{
+                border: `1.5px solid ${borderColor}`,
+                backgroundColor: lightBlueBar,
+                color: '#0F172A',
+                padding: '7px 14px',
+                textAlign: 'center',
+                fontSize: '14pt',
+                fontWeight: 800,
+                letterSpacing: '0.03em',
+                textTransform: 'uppercase'
+              }}>
+                DEFECT FINDING REPORT
+              </div>
+
+              <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <tbody>
+                    <tr>
+                      <td style={{ ...labelCellStyle, width: '24%' }}>ID RECORD</td>
+                      <td style={{ ...valueCellStyle, fontWeight: 700 }}>{data.defect_code || '-'}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ ...labelCellStyle, borderBottom: 'none' }}>PROJECT NAME</td>
+                      <td style={{ ...valueCellStyle, borderBottom: 'none', fontWeight: 700 }}>{projectName}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '48% 50.5%', justifyContent: 'space-between', alignItems: 'stretch' }}>
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>FINDING</div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <tbody>
+                      <tr><td style={{ ...labelCellStyle, width: '49%' }}>OBJECT / BUILDING</td><td style={valueCellStyle}>{buildingName}</td></tr>
+                      <tr><td style={labelCellStyle}>DICIPLINE</td><td style={valueCellStyle}>{data.discipline || '-'}</td></tr>
+                      <tr><td style={labelCellStyle}>FINDING CATEGORY</td><td style={{ ...valueCellStyle, fontWeight: 700 }}>{data.defect_category || '-'}</td></tr>
+                      <tr><td style={labelCellStyle}>REPORT DATE</td><td style={valueCellStyle}>{data.defect_date || '-'}</td></tr>
+                      <tr><td style={labelCellStyle}>DETAIL FINDING</td><td style={valueCellStyle}>{data.defect_type || '-'}</td></tr>
+                      <tr><td style={labelCellStyle}>INSPECTOR NAME</td><td style={valueCellStyle}>{reporterName}</td></tr>
+                      <tr><td style={labelCellStyle}>TARGET CLOSE (SLA)</td><td style={valueCellStyle}>{data.sla_days !== undefined ? `${data.sla_days} Hari` : '-'} ({slaInfo.text})</td></tr>
+                      <tr><td style={labelCellStyle}>POSITION/LAYOUT</td><td style={valueCellStyle}>{floorplanName}</td></tr>
+                    </tbody>
+                  </table>
+                  <div style={{ padding: '4px 8px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: '52px' }}>
+                    <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', marginBottom: '2px' }}>FINDING NOTE :</div>
+                    <div style={{ fontSize: '8.5pt', color: '#0F172A', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.25' }}>{data.notes || ''}</div>
+                  </div>
+                </div>
+
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>DEFECT LOCATION</div>
+                  <div style={{ flex: 1, padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '240px' }}>
+                    {floorplanImage ? <img src={floorplanImage} alt="Defect Location" style={{ maxHeight: '240px', maxWidth: '100%', objectFit: 'contain' }} /> : null}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: lightBlueBar, color: '#0F172A', fontWeight: 700, fontSize: '9pt', textAlign: 'center', padding: '4px 8px', textTransform: 'uppercase', marginBottom: '4px' }}>
+                  ACTION / CORRECTION
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '48% 50.5%', justifyContent: 'space-between', alignItems: 'stretch' }}>
+                  <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <tbody>
+                        <tr><td style={{ ...labelCellStyle, width: '49%' }}>STATUS FINDING</td><td style={{ ...valueCellStyle, fontWeight: 700, textTransform: 'uppercase' }}>{currentStatus}</td></tr>
+                        <tr><td style={labelCellStyle}>CLOSING DATE</td><td style={valueCellStyle}>{closingDate || '-'}</td></tr>
+                        <tr><td style={{ ...labelCellStyle, borderBottom: 'none' }}>INSPECTOR NAME</td><td style={{ ...valueCellStyle, borderBottom: 'none' }}>{closingInspectorName}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ border: `1.5px solid ${borderColor}`, backgroundColor: '#FFFFFF', padding: '4px 8px' }}>
+                    <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', marginBottom: '2px' }}>ACTION NOTE :</div>
+                    <div style={{ fontSize: '8.5pt', color: '#0F172A', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.25' }}>{actionNote || ''}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '48% 50.5%', justifyContent: 'space-between', alignItems: 'stretch' }}>
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>PHOTO DEFECT / FINDING</div>
+                  <div style={{ height: '210px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {defectPhotos[0] ? <img src={defectPhotos[0]} alt="Photo 1" style={{ maxHeight: '198px', maxWidth: '100%', objectFit: 'contain' }} /> : null}
+                  </div>
+                  <div style={{ borderBottom: `1.2px solid ${borderColor}`, textAlign: 'center', padding: '3px', fontSize: '8.5pt', fontWeight: 600 }}>Photo 1</div>
+                  <div style={{ height: '210px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {defectPhotos[1] ? <img src={defectPhotos[1]} alt="Photo 2" style={{ maxHeight: '198px', maxWidth: '100%', objectFit: 'contain' }} /> : null}
+                  </div>
+                  <div style={{ textAlign: 'center', padding: '3px', fontSize: '8.5pt', fontWeight: 600 }}>Photo 2</div>
+                </div>
+
+                <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
+                  <div style={sectionBannerStyle}>PHOTO DEFECT / FINDING</div>
+                  <div style={{ height: '210px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {actionPhotos[0] ? <img src={actionPhotos[0]} alt="Photo 1" style={{ maxHeight: '198px', maxWidth: '100%', objectFit: 'contain' }} /> : null}
+                  </div>
+                  <div style={{ borderBottom: `1.2px solid ${borderColor}`, textAlign: 'center', padding: '3px', fontSize: '8.5pt', fontWeight: 600 }}>Photo 1</div>
+                  <div style={{ height: '210px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: `1.2px solid ${borderColor}` }}>
+                    {actionPhotos[1] ? <img src={actionPhotos[1]} alt="Photo 2" style={{ maxHeight: '198px', maxWidth: '100%', objectFit: 'contain' }} /> : null}
+                  </div>
+                  <div style={{ textAlign: 'center', padding: '3px', fontSize: '8.5pt', fontWeight: 600 }}>Photo 2</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- DATA MASTER VIEW (PROJECT & BUILDINGS) ---
+function DataMasterView({ db, setDb, darkMode, currentUser }) {
+  const [projectName, setProjectName] = useState('');
+  const [projectCode, setProjectCode] = useState('');
+  const [selectedProjectForBldg, setSelectedProjectForBldg] = useState('');
+  const [buildingName, setBuildingName] = useState('');
+  const [floorplanFiles, setFloorplanFiles] = useState([]);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleAddProject = async (e) => {
+    e.preventDefault();
+    if (!projectName.trim()) return;
+    setIsSaving(true);
+    try {
+      const res = await fetchSupabase('projects', 'POST', {
+        project_name: projectName.trim(),
+        project_code: projectCode.trim() || `PRJ-${Date.now().toString().slice(-4)}`
+      });
+      if (res && res[0]) {
+        setDb(prev => ({ ...prev, projects: [...(prev.projects || []), res[0]] }));
+        setProjectName('');
+        setProjectCode('');
+      }
+    } catch (err) {
+      alert("Gagal menyimpan proyek: " + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteProject = async (id) => {
+    try {
+      await fetchSupabase(`buildings?project_id=eq.${id}`, 'DELETE');
+      await fetchSupabase(`projects?id=eq.${id}`, 'DELETE');
+      setDb(prev => ({
+        ...prev,
+        projects: (prev.projects || []).filter(p => p.id !== id),
+        buildings: (prev.buildings || []).filter(b => b.project_id !== id)
+      }));
+    } catch (err) {
+      alert("Gagal menghapus proyek: " + err.message);
+    }
+  };
+
+  const handleFloorplanUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    const processed = [];
+    for (let i = 0; i < files.length; i++) {
+      const compressed = await compressImage(files[i]);
+      processed.push({
+        id: `${Date.now()}_${i}`,
+        name: files[i].name,
+        image: compressed
+      });
+    }
+    setFloorplanFiles(prev => [...prev, ...processed]);
+  };
+
+  const handleAddBuilding = async (e) => {
+    e.preventDefault();
+    if (!selectedProjectForBldg || !buildingName.trim()) return;
+    setIsSaving(true);
+    try {
+      const res = await fetchSupabase('buildings', 'POST', {
+        project_id: parseInt(selectedProjectForBldg),
+        building_name: buildingName.trim(),
+        floorplans: floorplanFiles
+      });
+      if (res && res[0]) {
+        setDb(prev => ({ ...prev, buildings: [...(prev.buildings || []), res[0]] }));
+        setBuildingName('');
+        setFloorplanFiles([]);
+      }
+    } catch (err) {
+      alert("Gagal menyimpan gedung/area: " + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteBuilding = async (id) => {
+    try {
+      await fetchSupabase(`buildings?id=eq.${id}`, 'DELETE');
+      setDb(prev => ({
+        ...prev,
+        buildings: (prev.buildings || []).filter(b => b.id !== id)
+      }));
+    } catch (err) {
+      alert("Gagal menghapus gedung: " + err.message);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+        <h2 className="text-2xl font-black text-slate-800 dark:text-white">Master Data Project & Buildings</h2>
+        <p className="text-xs font-medium text-slate-500 mt-1">Kelola daftar proyek, gedung/zona, dan unggah gambar denah (floorplan) untuk penitikan lokasi temuan.</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Form Tambah Project */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-5">
+          <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2"><Building size={18} className="text-[#0F4C81]"/> Tambah Proyek Baru</h3>
+          <form onSubmit={handleAddProject} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Proyek *</label>
+              <input type="text" required value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="Contoh: Tower A Residence" className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Kode Proyek (Opsional)</label>
+              <input type="text" value={projectCode} onChange={e => setProjectCode(e.target.value)} placeholder="Contoh: PRJ-01" className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+            <button type="submit" disabled={isSaving} className="w-full py-3 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all">
+              <Plus size={16}/> Simpan Proyek
+            </button>
+          </form>
+
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-700 space-y-2 max-h-64 overflow-y-auto">
+            {(db.projects || []).map(p => (
+              <div key={p.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700">
+                <div>
+                  <p className="text-sm font-bold text-slate-800 dark:text-white">{p.project_name}</p>
+                  <p className="text-[11px] font-semibold text-slate-400">{p.project_code}</p>
+                </div>
+                {currentUser?.role === 'Admin' && (
+                  <button onClick={() => handleDeleteProject(p.id)} className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"><Trash2 size={16}/></button>
+                )}
+              </div>
+            ))}
           </div>
+        </div>
+
+        {/* Form Tambah Building & Floorplan */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-5">
+          <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2"><MapPin size={18} className="text-[#0F4C81]"/> Tambah Object / Building & Denah</h3>
+          <form onSubmit={handleAddBuilding} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Pilih Proyek *</label>
+              <select required value={selectedProjectForBldg} onChange={e => setSelectedProjectForBldg(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                <option value="">-- Pilih Proyek --</option>
+                {(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Gedung / Zona / Lantai *</label>
+              <input type="text" required value={buildingName} onChange={e => setBuildingName(e.target.value)} placeholder="Contoh: Lantai 1 - Lobby Utama" className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Upload Denah / Floorplan (Gambar)</label>
+              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                <UploadCloud size={18}/> Pilih Gambar Denah ({floorplanFiles.length} terpilih)
+                <input type="file" accept="image/*" multiple onChange={handleFloorplanUpload} className="hidden" />
+              </label>
+            </div>
+            <button type="submit" disabled={isSaving} className="w-full py-3 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all">
+              <Plus size={16}/> Simpan Building & Denah
+            </button>
+          </form>
+
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-700 space-y-2 max-h-64 overflow-y-auto">
+            {(db.buildings || []).map(b => {
+              const proj = (db.projects || []).find(p => p.id === b.project_id);
+              return (
+                <div key={b.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700">
+                  <div>
+                    <p className="text-sm font-bold text-slate-800 dark:text-white">{b.building_name}</p>
+                    <p className="text-[11px] font-semibold text-slate-400">{proj?.project_name || 'Unknown Project'} • {(b.floorplans || []).length} Denah</p>
+                  </div>
+                  {currentUser?.role === 'Admin' && (
+                    <button onClick={() => handleDeleteBuilding(b.id)} className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"><Trash2 size={16}/></button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1006,1108 +1357,1397 @@ function DataMasterView({ db, setDb, darkMode, currentUser }) {
 
 // --- INPUT DEFECT VIEW ---
 function InputDefectView({ db, setDb, currentUser, darkMode, primaryColor }) {
-  const [marker, setMarker] = useState(null);
-  const [photoPreview, setPhotoPreview] = useState([]);
-  const [isAddingNewType, setIsAddingNewType] = useState(false);
-  const [newDefectType, setNewDefectType] = useState('');
-  const [dynamicDefectTypes, setDynamicDefectTypes] = useState([]);
-  
-  const typeContainerRef = useRef(null);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [buildingId, setBuildingId] = useState('');
+  const [floorplanId, setFloorplanId] = useState('');
+  const [discipline, setDiscipline] = useState('Struktur');
+  const [defectType, setDefectType] = useState(DEFECT_DICTIONARY['Struktur'][0]);
+  const [customDefectType, setCustomDefectType] = useState('');
+  const [defectCategory, setDefectCategory] = useState('Minor');
+  const [defectDate, setDefectDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [slaDays, setSlaDays] = useState(7);
+  const [notes, setNotes] = useState('');
+  const [pinPos, setPinPos] = useState({ x: 50, y: 50 });
+  const [hasPinned, setHasPinned] = useState(false);
+  const [photos, setPhotos] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [previewDocData, setPreviewDocData] = useState(null);
 
-  const nextId = (db.defects || []).length > 0 ? Math.max(...(db.defects || []).map(d => d.id)) + 1 : 1;
-  const defectCodePreview = `DF-${nextId.toString().padStart(5, '0')}`;
-
-  const isViewer = currentUser?.role === 'Viewer';
-  // Admin dan User BISA melakukan input defect
-  const canSubmit = !isViewer;
-
-  const [formData, setFormData] = useState({
-    inspector_id: currentUser?.id || '',
-    project_id: '',
-    building_id: '',
-    floorplan_id: '',
-    discipline: 'Struktur',
-    defect_type: '',
-    defect_category: 'Minor',
-    defect_date: new Date().toISOString().split('T')[0],
-    sla_days: 7,
-    notes: ''
-  });
-
-  const inputClass = `w-full p-2.5 rounded-lg border focus:ring-2 focus:ring-[#0F4C81] outline-none transition-all text-sm ${darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-300'} ${isViewer ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed opacity-70 text-gray-500' : ''}`;
-  const labelClass = "block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300";
-
-  const currentDiscipline = formData.discipline || 'Struktur';
-  const baseTypesForDiscipline = DEFECT_DICTIONARY[currentDiscipline] || DEFECT_DICTIONARY['General'];
-  const allDefectTypes = [...new Set([...baseTypesForDiscipline, ...(db.defects || []).filter(d => d.discipline === currentDiscipline).map(d => d.defect_type), ...dynamicDefectTypes])];
-
-  useEffect(() => {
-    if (!allDefectTypes.includes(formData.defect_type) && allDefectTypes.length > 0 && !isAddingNewType) {
-       setFormData(prev => ({...prev, defect_type: allDefectTypes[0]}));
-    }
-  }, [formData.discipline, allDefectTypes, isAddingNewType]);
-
-  const handleCancelNewType = () => {
-    setIsAddingNewType(false);
-    setNewDefectType('');
-    if (allDefectTypes.length > 0) {
-      setFormData(prev => ({...prev, defect_type: allDefectTypes[0]}));
-    }
-  };
-
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (isAddingNewType && typeContainerRef.current && !typeContainerRef.current.contains(event.target)) {
-        handleCancelNewType();
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isAddingNewType, allDefectTypes]);
-
-  const selectedBuilding = (db.buildings || []).find(b => b.id === formData.building_id);
+  const availableBuildings = (db.buildings || []).filter(b => String(b.project_id) === String(selectedProjectId));
+  const selectedBuilding = availableBuildings.find(b => String(b.id) === String(buildingId));
   const availableFloorplans = selectedBuilding?.floorplans || [];
-  const selectedFloorplanImage = availableFloorplans.find(fp => fp.id === parseInt(formData.floorplan_id))?.image;
+  const selectedFloorplan = availableFloorplans.find(f => String(f.id) === String(floorplanId));
 
-  useEffect(() => {
-    setMarker(null);
-    if (availableFloorplans.length > 0) {
-      setFormData(prev => ({...prev, floorplan_id: availableFloorplans[0].id}));
-    } else {
-      setFormData(prev => ({...prev, floorplan_id: ''}));
-    }
-  }, [formData.building_id]);
-
-  const handleMapClick = (e) => {
-    if (!selectedFloorplanImage || isViewer) return; 
-    const rect = e.target.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    setMarker({ x, y });
+  const handleDisciplineChange = (val) => {
+    setDiscipline(val);
+    const list = DEFECT_DICTIONARY[val] || ['Lain-lain'];
+    setDefectType(list[0]);
   };
 
   const handlePhotoUpload = async (e) => {
-    if (isViewer) return;
-    const files = Array.from(e.target.files);
-    const compressedImages = await Promise.all(files.map(f => compressImage(f)));
-    setPhotoPreview([...photoPreview, ...compressedImages]);
+    const files = Array.from(e.target.files || []);
+    if (photos.length >= 2) {
+      alert("Maksimum pengambilan/unggah foto adalah 2 foto.");
+      return;
+    }
+    const remainingSlots = 2 - photos.length;
+    const filesToProcess = files.slice(0, remainingSlots);
+    const compressedList = [];
+    for (const file of filesToProcess) {
+      const comp = await compressImage(file);
+      compressedList.push(comp);
+    }
+    setPhotos(prev => [...prev, ...compressedList].slice(0, 2));
   };
 
-  const handleReset = () => {
-    if (isViewer) return;
-    setFormData({ ...formData, project_id: '', building_id: '', floorplan_id: '', notes: '', sla_days: 0 });
-    setMarker(null); setPhotoPreview([]); setIsAddingNewType(false); setNewDefectType(''); setDynamicDefectTypes([]);
+  const handlePinClick = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    setPinPos({ x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 });
+    setHasPinned(true);
   };
 
-  // VALIDASI KELENGKAPAN FORM SEBELUM SIMPAN
-  const missingFields = [];
-  if (!formData.project_id) missingFields.push("Nama Proyek");
-  if (!formData.building_id) missingFields.push("Bangunan");
-  if (!formData.defect_type || formData.defect_type === '') missingFields.push("Jenis Defect");
-  if (!formData.defect_date) missingFields.push("Tanggal Defect");
-  if (formData.sla_days === '' || formData.sla_days === null || formData.sla_days === undefined) missingFields.push("SLA Perbaikan");
-  if (photoPreview.length === 0) missingFields.push("Foto Defect");
-  if (availableFloorplans.length > 0 && !marker) missingFields.push("Lokasi Defect pada Denah");
-  
-  const isFormReady = missingFields.length === 0;
-
-  const handleSubmit = async (e) => {
-    if (e) e.preventDefault();
-    if (!canSubmit || !isFormReady) return;
-    
+  const handleSave = async (openNcrPrint = false) => {
+    if (!buildingId) {
+      alert("Pilih Proyek dan Object/Building terlebih dahulu!");
+      return;
+    }
+    setIsSubmitting(true);
     try {
-      const markedImage = (marker && selectedFloorplanImage) ? await generateMarkedImage(selectedFloorplanImage, marker.x, marker.y, '#ef4444') : null;
-      
+      const markedImg = selectedFloorplan && hasPinned
+        ? await generateMarkedImage(selectedFloorplan.image, pinPos.x, pinPos.y, 'red')
+        : (selectedFloorplan?.image || null);
+
+      const finalDefectType = defectType === 'Lain-lain' && customDefectType.trim() ? customDefectType.trim() : defectType;
+      const codePrefix = defectCategory === 'Hard (NCR)' ? 'NCR' : 'DEF';
+      const defectCode = `${codePrefix}-${new Date().getFullYear()}-${String((db.defects || []).length + 1).padStart(4, '0')}`;
+
       const payload = {
-        defect_code: defectCodePreview,
-        inspector_id: formData.inspector_id ? parseInt(formData.inspector_id) : null,
-        project_id: formData.project_id ? parseInt(formData.project_id) : null,
-        building_id: formData.building_id ? parseInt(formData.building_id) : null,
-        floorplan_id: formData.floorplan_id ? formData.floorplan_id.toString() : null,
-        discipline: formData.discipline,
-        defect_type: formData.defect_type,
-        defect_category: formData.defect_category,
-        defect_date: formData.defect_date,
-        sla_days: formData.sla_days ? parseInt(formData.sla_days) : 0,
-        notes: formData.notes,
-        location_x: marker ? marker.x : null,
-        location_y: marker ? marker.y : null,
-        defect_photo: photoPreview,
-        marked_floorplan_image: markedImage
+        defect_code: defectCode,
+        building_id: parseInt(buildingId),
+        floorplan_id: floorplanId || null,
+        discipline,
+        defect_type: finalDefectType,
+        defect_category: defectCategory,
+        defect_date: defectDate,
+        sla_days: parseInt(slaDays) || 7,
+        notes,
+        pin_x: hasPinned ? pinPos.x : null,
+        pin_y: hasPinned ? pinPos.y : null,
+        marked_floorplan_image: markedImg,
+        defect_photo: photos,
+        inspector_id: currentUser?.id || 1
       };
-      
-      const resDefect = await fetchSupabase('defects', 'POST', payload);
-      const newDefectRecord = Array.isArray(resDefect) ? resDefect[0] : resDefect;
-      if (!newDefectRecord) throw new Error("Data defect gagal dikembalikan dari server. Pastikan RLS dimatikan.");
-      
-      setDb(prev => ({ ...prev, defects: [...(prev.defects || []), newDefectRecord] }));
-      alert(`Defect ${defectCodePreview} berhasil disimpan ke Cloud!`);
-      
-      setMarker(null);
-      setPhotoPreview([]);
-      setFormData(prev => ({...prev, notes: '', sla_days: 0}));
-    } catch(err) { alert("Gagal menyimpan defect: " + err.message); }
+
+      const res = await fetchSupabase('defects', 'POST', payload);
+      const savedRecord = (res && res[0]) ? res[0] : { id: Date.now(), ...payload };
+      setDb(prev => ({ ...prev, defects: [...(prev.defects || []), savedRecord] }));
+
+      if (openNcrPrint) {
+        setPreviewDocData(savedRecord);
+      } else {
+        alert("Data defect berhasil disimpan!");
+      }
+
+      // Reset form fields
+      setNotes('');
+      setPhotos([]);
+      setHasPinned(false);
+    } catch (err) {
+      alert("Gagal menyimpan defect: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
+
+  const isNcrCategory = defectCategory === 'Hard (NCR)';
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 p-6">
-      <div className="flex justify-between items-center mb-6 border-b pb-4 dark:border-gray-700">
-        <h2 className="text-xl font-bold flex items-center gap-2"><AlertCircle className="text-[#0F4C81] dark:text-blue-400" /> Input Defect Baru</h2>
-        <div className="flex items-center gap-2"><span className="px-4 py-1.5 bg-blue-100 text-[#0F4C81] rounded-full text-sm font-bold shadow-sm">{defectCodePreview}</span></div>
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+        <h2 className="text-2xl font-black text-slate-800 dark:text-white">Input Defect / Temuan Baru</h2>
+        <p className="text-xs font-medium text-slate-500 mt-1">Catat temuan lapangan, tandai titik lokasi pada denah, dan unggah bukti foto (maks. 2 foto).</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-4">
-          <div>
-            <label className={labelClass}>Inspector Pelapor</label>
-            <input type="text" className={`w-full p-2.5 rounded-lg border text-sm bg-gray-100 cursor-not-allowed font-medium text-gray-600 dark:text-gray-400`} value={currentUser?.name || ''} readOnly />
-          </div>
-          <div><label className={labelClass}>Nama Proyek</label><select className={inputClass} disabled={isViewer} value={formData.project_id} onChange={e => setFormData({...formData, project_id: parseInt(e.target.value), building_id: '', floorplan_id: ''})}><option value="">-- Pilih Proyek --</option>{(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}</select></div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><label className={labelClass}>Bangunan</label><select className={inputClass} disabled={isViewer} value={formData.building_id} onChange={e => setFormData({...formData, building_id: parseInt(e.target.value)})}><option value="">-- Pilih Bangunan --</option>{(db.buildings || []).filter(b => b.project_id === formData.project_id).map(b => <option key={b.id} value={b.id}>{b.building_name}</option>)}</select></div>
-            <div><label className={labelClass}>Pilih Denah</label><select className={inputClass} disabled={isViewer || availableFloorplans.length === 0} value={formData.floorplan_id} onChange={e => {setFormData({...formData, floorplan_id: e.target.value}); setMarker(null);}}>{availableFloorplans.length === 0 ? <option value="">(Tidak ada denah)</option> : availableFloorplans.map(fp => <option key={fp.id} value={fp.id}>{fp.name}</option>)}</select></div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Form Fields */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelClass}>Disiplin</label>
-              <select className={inputClass} disabled={isViewer} value={formData.discipline} onChange={e => setFormData({...formData, discipline: e.target.value, defect_type: ''})}>
-                <option>Struktur</option><option>Arsitektur</option><option>MEP</option><option>Landscape</option><option>Infrastructure</option><option>Interior</option><option>General</option>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Proyek *</label>
+              <select value={selectedProjectId} onChange={e => { setSelectedProjectId(e.target.value); setBuildingId(''); setFloorplanId(''); }} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                <option value="">-- Pilih Proyek --</option>
+                {(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
               </select>
             </div>
-            <div><label className={labelClass}>Kategori</label><select className={inputClass} disabled={isViewer} value={formData.defect_category} onChange={e => setFormData({...formData, defect_category: e.target.value})}><option>Minor</option><option>Major</option><option>Hard (NCR)</option></select></div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Object / Building *</label>
+              <select value={buildingId} onChange={e => { setBuildingId(e.target.value); setFloorplanId(''); }} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                <option value="">-- Pilih Building --</option>
+                {availableBuildings.map(b => <option key={b.id} value={b.id}>{b.building_name}</option>)}
+              </select>
+            </div>
           </div>
 
-          <div ref={typeContainerRef} onBlur={(e) => {
-             if (isAddingNewType && typeContainerRef.current && !typeContainerRef.current.contains(e.relatedTarget)) {
-               handleCancelNewType();
-             }
-          }}>
-            <label className={labelClass}>Jenis Defect</label>
-            {!isAddingNewType ? (
-              <select className={inputClass} disabled={isViewer} value={formData.defect_type} onChange={e => { if(e.target.value==='NEW') setIsAddingNewType(true); else setFormData({...formData, defect_type: e.target.value}); }}>
-                {allDefectTypes.map(type => <option key={type} value={type}>{type}</option>)}
-                {!isViewer && <option value="NEW" className="font-bold text-blue-600">+ Tambah Baru...</option>}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Disiplin Pekerjaan</label>
+              <select value={discipline} onChange={e => handleDisciplineChange(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                {Object.keys(DEFECT_DICTIONARY).map(d => <option key={d} value={d}>{d}</option>)}
               </select>
-            ) : (
-              <div className="flex flex-col gap-2 p-3 bg-gray-100 rounded-lg border">
-                <input type="text" className={inputClass} disabled={isViewer} placeholder="Ketik jenis defect baru..." value={newDefectType} onChange={e => setNewDefectType(e.target.value)} autoFocus />
-                <div className="flex gap-2 justify-end">
-                  <button type="button" onClick={handleCancelNewType} className="px-3 py-1 bg-gray-400 text-white text-xs rounded">Cancel</button>
-                  <button type="button" onClick={() => { 
-                    if (newDefectType.trim()) { 
-                      setDynamicDefectTypes([...dynamicDefectTypes, newDefectType.trim()]); 
-                      setFormData({...formData, defect_type: newDefectType.trim()}); 
-                    } else {
-                      if (allDefectTypes.length > 0) setFormData(prev => ({...prev, defect_type: allDefectTypes[0]}));
-                    }
-                    setIsAddingNewType(false); 
-                    setNewDefectType(''); 
-                  }} className="px-3 py-1 bg-[#0F4C81] text-white text-xs rounded">Simpan</button>
-                </div>
-              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Klasifikasi Temuan</label>
+              <select value={defectCategory} onChange={e => setDefectCategory(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${defectCategory === 'Hard (NCR)' ? 'border-rose-500 text-rose-600 bg-rose-50/40' : (darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200')}`}>
+                <option value="Minor">Minor</option>
+                <option value="Major">Major</option>
+                <option value="Hard (NCR)">Hard (NCR)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Detail Temuan / Defect</label>
+            <select value={defectType} onChange={e => setDefectType(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+              {(DEFECT_DICTIONARY[discipline] || ['Lain-lain']).map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+            {defectType === 'Lain-lain' && (
+              <input type="text" value={customDefectType} onChange={e => setCustomDefectType(e.target.value)} placeholder="Tuliskan detail temuan spesifik..." className={`mt-2 w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className={labelClass}>Tanggal Defect</label><input type="date" disabled={isViewer} className={inputClass} value={formData.defect_date} onChange={e => setFormData({...formData, defect_date: e.target.value})} /></div>
-            <div><label className={labelClass}>SLA (Hari)</label><input type="number" min="0" disabled={isViewer} className={inputClass} value={formData.sla_days} onChange={e => setFormData({...formData, sla_days: e.target.value === '' ? '' : parseInt(e.target.value)})} /></div>
-          </div>
-          
-          <div><label className={labelClass}>Catatan Tambahan</label><textarea rows="2" disabled={isViewer} className={inputClass} value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} placeholder="Deskripsi..."></textarea></div>
-        </div>
-
-        <div className="space-y-6">
-          <div>
-            <label className={labelClass}>Lokasi Defect pada Denah</label>
-            <div className={`relative w-full aspect-video rounded-xl overflow-hidden border-2 ${selectedFloorplanImage ? (isViewer ? 'border-solid cursor-not-allowed' : 'border-dashed cursor-crosshair') : 'border-solid cursor-not-allowed'} bg-gray-100`} onClick={isViewer ? undefined : handleMapClick}>
-              {selectedFloorplanImage ? (
-                <><img src={selectedFloorplanImage} className="w-full h-full object-contain pointer-events-none" />{!marker && !isViewer && <div className="absolute inset-0 flex items-center justify-center bg-black/10"><div className="bg-white/80 px-4 py-2 rounded-full text-sm font-medium"><MapPin size={16}/> Klik untuk tandai</div></div>}</>
-              ) : <div className="absolute inset-0 flex items-center justify-center text-gray-400"><MapPin size={32} className="opacity-50" /></div>}
-              {marker && <div className="absolute w-6 h-6 bg-red-500 border-2 border-white rounded-full shadow-lg transform -translate-x-1/2 -translate-y-1/2 pointer-events-none" style={{ left: `${marker.x}%`, top: `${marker.y}%` }} />}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Tanggal Temuan</label>
+              <input type="date" value={defectDate} onChange={e => setDefectDate(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Target Close SLA (Hari)</label>
+              <input type="number" min="1" value={slaDays} onChange={e => setSlaDays(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
             </div>
           </div>
 
           <div>
-            <label className={labelClass}>Foto Defect</label>
-            <div className="flex gap-2 overflow-x-auto py-2">
-              <label className={`flex-shrink-0 w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl ${isViewer ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}><UploadCloud size={20} className="text-gray-400 mb-1" /><span className="text-[10px]">Dari File</span><input type="file" disabled={isViewer} multiple accept="image/*" className="hidden" onChange={handlePhotoUpload} /></label>
-              <label className={`flex-shrink-0 w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl ${isViewer ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}><Camera size={20} className="text-gray-400 mb-1" /><span className="text-[10px]">Kamera HP</span><input type="file" disabled={isViewer} multiple accept="image/*" capture="environment" className="hidden" onChange={handlePhotoUpload} /></label>
-              {photoPreview.map((src, idx) => (
-                <div key={idx} className="flex-shrink-0 w-20 h-20 rounded-xl overflow-hidden relative border"><img src={src} className="w-full h-full object-cover" />{!isViewer && <button type="button" onClick={() => setPhotoPreview(photoPreview.filter((_, i) => i !== idx))} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1"><X size={10}/></button>}</div>
-              ))}
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Catatan Temuan (Finding Note)</label>
+            <textarea rows="3" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Jelaskan kronologi atau detail lokasi temuan..." className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+          </div>
+
+          {/* Foto Maksimum 2 */}
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-xs font-bold uppercase text-slate-500">Bukti Foto Defect ({photos.length}/2 Maks.)</label>
             </div>
+            {photos.length < 2 && (
+              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                <Camera size={18}/> Ambil / Upload Foto ({2 - photos.length} slot tersisa)
+                <input type="file" accept="image/*" multiple onChange={handlePhotoUpload} className="hidden" />
+              </label>
+            )}
+            {photos.length > 0 && (
+              <div className="grid grid-cols-2 gap-3 mt-3">
+                {photos.map((src, idx) => (
+                  <div key={idx} className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 h-32">
+                    <img src={src} alt={`Preview ${idx + 1}`} className="w-full h-full object-cover" />
+                    <button type="button" onClick={() => setPhotos(prev => prev.filter((_, i) => i !== idx))} className="absolute top-1.5 right-1.5 p-1.5 bg-rose-600 text-white rounded-lg shadow"><Trash2 size={14}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="col-span-1 lg:col-span-2 pt-4 border-t dark:border-gray-700 flex flex-col items-end gap-2 mt-4">
-          {!isFormReady && canSubmit && (
-            <div className="text-red-500 text-xs font-bold mb-2 bg-red-50 px-4 py-2 rounded-lg border border-red-200">
-              🚨 Data belum lengkap! Mohon isi data berikut: {missingFields.join(', ')}
-            </div>
-          )}
-          <div className="flex gap-4">
-            <button type="button" onClick={canSubmit ? handleReset : undefined} disabled={!canSubmit} className={`px-6 py-2.5 rounded-xl border font-medium transition-colors text-sm ${canSubmit ? 'border-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700' : 'border-gray-200 bg-gray-200 text-gray-400 cursor-not-allowed'}`} title={!canSubmit ? "Akses ditolak (Viewer)" : ""}>Reset / Data Baru</button>
-            <button type="button" onClick={canSubmit ? handleSubmit : undefined} disabled={!canSubmit || !isFormReady} className={`px-6 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-all shadow-md text-sm ${canSubmit && isFormReady ? `${primaryColor} hover:bg-blue-800 text-white` : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} title={!canSubmit ? "Akses ditolak (Viewer)" : ""}><Save size={18} /> Simpan Defect</button>
+        {/* Interactive Floorplan Pinpoint */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2"><MapPin size={18} className="text-rose-500"/> Penitikan Lokasi pada Denah</h3>
+            <select value={floorplanId} onChange={e => { setFloorplanId(e.target.value); setHasPinned(false); }} className={`p-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+              <option value="">-- Pilih Denah / Layout --</option>
+              {availableFloorplans.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
           </div>
+
+          <div className="flex-1 min-h-[360px] rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-center overflow-hidden relative">
+            {selectedFloorplan ? (
+              <div onClick={handlePinClick} className="relative cursor-crosshair inline-block max-w-full">
+                <img src={selectedFloorplan.image} alt="Floorplan" className="max-h-[460px] w-auto object-contain select-none" />
+                {hasPinned && (
+                  <div
+                    style={{ left: `${pinPos.x}%`, top: `${pinPos.y}%` }}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-rose-600 border-2 border-white shadow-lg flex items-center justify-center text-white text-[10px] font-black animate-bounce"
+                  >
+                    !
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs font-bold text-slate-400 text-center px-6">Pilih Proyek, Building, dan Denah untuk menandai titik lokasi defect.</p>
+            )}
+          </div>
+          {hasPinned && <p className="text-xs font-bold text-emerald-600 text-center">Titik koordinat terkunci pada X: {pinPos.x}%, Y: {pinPos.y}%</p>}
         </div>
-      </form>
+      </div>
+
+      {/* Action Buttons: Dipindah ke Paling Bawah */}
+      <div className="bg-white dark:bg-slate-800 p-5 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col sm:flex-row gap-3">
+        <button
+          type="button"
+          disabled={isSubmitting}
+          onClick={() => handleSave(false)}
+          className={`flex-1 py-4 px-6 ${primaryColor} text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-md transition-all disabled:opacity-60`}
+        >
+          <Save size={18}/> {isSubmitting ? 'Menyimpan...' : 'Simpan Data'}
+        </button>
+        <button
+          type="button"
+          disabled={!isNcrCategory || isSubmitting}
+          onClick={() => handleSave(true)}
+          className={`flex-1 py-4 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+            isNcrCategory
+              ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md cursor-pointer'
+              : 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
+          }`}
+        >
+          <Printer size={18}/> Print NCR & Simpan
+        </button>
+      </div>
+
+      {previewDocData && (
+        <DocumentFormPreviewModal data={previewDocData} db={db} onClose={() => setPreviewDocData(null)} />
+      )}
     </div>
   );
 }
 
-// --- ACTION / PERBAIKAN DETAIL VIEW ---
-function ActionDetailView({ defect, onBack, db, setDb, darkMode, currentUser }) {
-  const [marker, setMarker] = useState(defect.location_x && defect.location_y ? {x: defect.location_x, y: defect.location_y} : null);
-  const [photoPreview, setPhotoPreview] = useState(defect.defect_photo || []);
-  
-  const existingActions = (db.actions || []).filter(a => a.defect_id === defect.id);
-  const latestAction = existingActions.length > 0 ? existingActions[existingActions.length - 1] : null;
-  const [actionPhotoPreview, setActionPhotoPreview] = useState(latestAction?.action_photo || []);
+// --- ACTION & PERBAIKAN VIEW ---
+function ActionView({ db, setDb, currentUser, darkMode }) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [selectedDefect, setSelectedDefect] = useState(null);
 
-  const [isAddingNewType, setIsAddingNewType] = useState(false);
-  const [newDefectType, setNewDefectType] = useState('');
-  const [dynamicDefectTypes, setDynamicDefectTypes] = useState([]);
+  const getLatestStatus = (defectId) => {
+    const acts = (db.actions || []).filter(a => a.defect_id === defectId);
+    return acts.length > 0 ? acts[acts.length - 1].status : 'Open';
+  };
 
-  const typeContainerRef = useRef(null);
-  const bldg = (db.buildings || []).find(b => b.id === defect.building_id);
-  
-  const isViewer = currentUser?.role === 'Viewer';
-  const isAdmin = currentUser?.role === 'Admin';
-  const isUser = currentUser?.role === 'User';
-  // Konversi tipe data id menjadi String agar tidak gagal saat evaluasi persaman
-  const isReporter = String(defect.inspector_id) === String(currentUser?.id);
-  
-  const initialStatus = latestAction ? latestAction.status : 'Open';
-  const isStatusOpenOrProses = initialStatus === 'Open' || initialStatus === 'Proses Perbaikan';
-
-  // LOGIKA DISABLE FIELD BARU SESUAI INSTRUKSI
-  // Jika otoritasnya User dan ia bukan Inspector Pelapor, maka HANYA form perbaikan (Action) yang aktif BILA statusnya Open/Proses. Form atas (Defect) selalu terkunci.
-  const isDefectSectionDisabled = isViewer || (isUser && !isReporter);
-  const isActionSectionDisabled = isViewer || (isUser && !isReporter && !isStatusOpenOrProses);
-
-  let initialInspectorEdit = latestAction?.inspector_edit || defect.inspector_edit || '';
-  if (initialStatus === 'Open') {
-    initialInspectorEdit = '';
-  } else if (!initialInspectorEdit && (initialStatus === 'Close' || initialStatus === 'Proses Perbaikan')) {
-    initialInspectorEdit = defect.inspector_id || '';
-  }
-
-  const [formData, setFormData] = useState({
-    inspector_id: defect.inspector_id || '',
-    inspector_edit: initialInspectorEdit,
-    project_id: bldg ? bldg.project_id : '',
-    building_id: defect.building_id || '',
-    floorplan_id: defect.floorplan_id || '',
-    discipline: defect.discipline || 'Struktur',
-    defect_type: defect.defect_type || '',
-    defect_category: defect.defect_category || 'Minor',
-    defect_date: defect.defect_date || new Date().toISOString().split('T')[0],
-    sla_days: defect.sla_days !== undefined ? defect.sla_days : 7,
-    notes: defect.notes || '', // Catatan Tambahan (Defect)
-    action_date: latestAction ? latestAction.action_date : new Date().toISOString().split('T')[0],
-    action_note: latestAction ? latestAction.action_note : '', // Catatan Perbaikan
-    status: initialStatus,
+  const filteredList = (db.defects || []).filter(d => {
+    const bldg = (db.buildings || []).find(b => b.id === d.building_id);
+    const proj = bldg ? (db.projects || []).find(p => p.id === bldg.project_id) : null;
+    const status = getLatestStatus(d.id);
+    const matchStatus = statusFilter === 'ALL' || status === statusFilter;
+    const keyword = searchTerm.toLowerCase();
+    const matchText = !keyword ||
+      (d.defect_code || '').toLowerCase().includes(keyword) ||
+      (d.defect_type || '').toLowerCase().includes(keyword) ||
+      (bldg?.building_name || '').toLowerCase().includes(keyword) ||
+      (proj?.project_name || '').toLowerCase().includes(keyword);
+    return matchStatus && matchText;
   });
 
-  const inputClassDefect = `w-full p-2.5 rounded-lg border focus:ring-2 focus:ring-[#0F4C81] outline-none transition-all text-sm ${darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-300'} ${isDefectSectionDisabled ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed opacity-70 text-gray-500' : ''}`;
-  const inputClassAction = `w-full p-2.5 rounded-lg border focus:ring-2 focus:ring-[#0F4C81] outline-none transition-all text-sm ${darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-300'} ${isActionSectionDisabled ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed opacity-70 text-gray-500' : ''}`;
-  const labelClass = "block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300";
+  if (selectedDefect) {
+    return (
+      <ActionDetailView
+        defect={selectedDefect}
+        db={db}
+        setDb={setDb}
+        currentUser={currentUser}
+        darkMode={darkMode}
+        onBack={() => setSelectedDefect(null)}
+      />
+    );
+  }
 
-  const currentDiscipline = formData.discipline || 'Struktur';
-  const baseTypesForDiscipline = DEFECT_DICTIONARY[currentDiscipline] || DEFECT_DICTIONARY['General'];
-  const allDefectTypes = [...new Set([...baseTypesForDiscipline, ...(db.defects || []).filter(d => d.discipline === currentDiscipline).map(d => d.defect_type), ...dynamicDefectTypes])];
+  return (
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-slate-800 dark:text-white">Action & Tindak Lanjut Perbaikan</h2>
+          <p className="text-xs font-medium text-slate-500 mt-1">Pilih item defect untuk memperbarui status perbaikan, foto after, atau mencetak NCR.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+          <div className="relative flex-1 sm:w-64">
+            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Cari ID / temuan..." className={`w-full pl-10 pr-4 py-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+          </div>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={`px-3.5 py-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+            <option value="ALL">Semua Status</option>
+            <option value="Open">Open</option>
+            <option value="Proses Perbaikan">Proses Perbaikan</option>
+            <option value="Close">Close</option>
+          </select>
+        </div>
+      </div>
 
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        {filteredList.map(d => {
+          const bldg = (db.buildings || []).find(b => b.id === d.building_id);
+          const proj = bldg ? (db.projects || []).find(p => p.id === bldg.project_id) : null;
+          const acts = (db.actions || []).filter(a => a.defect_id === d.id);
+          const lastAct = acts.length > 0 ? acts[acts.length - 1] : null;
+          const status = lastAct ? lastAct.status : 'Open';
+          const sla = calculateSlaStatus(d.defect_date, d.sla_days, lastAct?.action_date);
+
+          return (
+            <div key={d.id} onClick={() => setSelectedDefect(d)} className="bg-white dark:bg-slate-800 p-5 rounded-[1.75rem] border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer flex flex-col justify-between space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-black text-[#0F4C81] dark:text-blue-400">{d.defect_code}</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                    status === 'Close' ? 'bg-emerald-100 text-emerald-700' :
+                    status === 'Proses Perbaikan' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
+                  }`}>{status}</span>
+                </div>
+                <h4 className="text-sm font-bold text-slate-800 dark:text-white line-clamp-2">{d.defect_type}</h4>
+                <p className="text-xs text-slate-500">{proj?.project_name || '-'} • {bldg?.building_name || '-'}</p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between text-xs">
+                <span className={`font-bold ${d.defect_category === 'Hard (NCR)' ? 'text-rose-600' : 'text-slate-500'}`}>{d.defect_category}</span>
+                <span className={sla.style || 'text-slate-400 font-semibold'}>{sla.text}</span>
+              </div>
+            </div>
+          );
+        })}
+        {filteredList.length === 0 && (
+          <div className="col-span-full text-center py-12 text-sm font-bold text-slate-400">Tidak ada data defect yang sesuai filter.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- ACTION DETAIL / UPDATE / DELETE VIEW ---
+function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) {
+  const existingActions = (db.actions || []).filter(a => a.defect_id === defect.id);
+  const latestAction = existingActions.length > 0 ? existingActions[existingActions.length - 1] : null;
+
+  const initialBuilding = (db.buildings || []).find(b => String(b.id) === String(defect.building_id));
+  const [selectedProjectId, setSelectedProjectId] = useState(initialBuilding ? String(initialBuilding.project_id) : '');
+  const [buildingId, setBuildingId] = useState(defect.building_id ? String(defect.building_id) : '');
+  const [floorplanId, setFloorplanId] = useState(() => {
+    if (defect.floorplan_id !== undefined && defect.floorplan_id !== null && defect.floorplan_id !== '') {
+      return String(defect.floorplan_id);
+    }
+    if (initialBuilding?.floorplans?.length === 1) {
+      return String(initialBuilding.floorplans[0].id);
+    }
+    return '';
+  });
+  const [discipline, setDiscipline] = useState(defect.discipline || 'Struktur');
+
+  const initialDictList = DEFECT_DICTIONARY[defect.discipline || 'Struktur'] || ['Lain-lain'];
+  const isKnownDefectType = initialDictList.includes(defect.defect_type);
+  const [defectType, setDefectType] = useState(isKnownDefectType ? defect.defect_type : 'Lain-lain');
+  const [customDefectType, setCustomDefectType] = useState(isKnownDefectType ? '' : (defect.defect_type || ''));
+
+  const [defectCategory, setDefectCategory] = useState(defect.defect_category || 'Minor');
+  const [defectDate, setDefectDate] = useState(defect.defect_date || new Date().toISOString().slice(0, 10));
+  const [slaDays, setSlaDays] = useState(defect.sla_days !== undefined && defect.sla_days !== null ? defect.sla_days : 7);
+  const [notes, setNotes] = useState(defect.notes || '');
+
+  const rawPinX = defect.pin_x ?? defect.pinX ?? defect.x;
+  const rawPinY = defect.pin_y ?? defect.pinY ?? defect.y;
+  const parsedPinX = rawPinX !== undefined && rawPinX !== null && rawPinX !== '' ? Number(rawPinX) : null;
+  const parsedPinY = rawPinY !== undefined && rawPinY !== null && rawPinY !== '' ? Number(rawPinY) : null;
+  const hasExplicitPin = parsedPinX !== null && parsedPinY !== null && !Number.isNaN(parsedPinX) && !Number.isNaN(parsedPinY);
+
+  const [pinPos, setPinPos] = useState({
+    x: hasExplicitPin ? parsedPinX : 50,
+    y: hasExplicitPin ? parsedPinY : 50
+  });
+  const [hasPinned, setHasPinned] = useState(hasExplicitPin || Boolean(defect.marked_floorplan_image));
+  const [detectedRedDot, setDetectedRedDot] = useState(null);
+  const [defectPhotos, setDefectPhotos] = useState((defect.defect_photo || []).slice(0, 2));
+
+  const [status, setStatus] = useState(latestAction ? latestAction.status : 'Open');
+  const [actionDate, setActionDate] = useState(latestAction?.action_date && latestAction.action_date !== '-' ? latestAction.action_date : new Date().toISOString().slice(0, 10));
+  const [actionNote, setActionNote] = useState(latestAction?.action_note || '');
+  const [actionPhotos, setActionPhotos] = useState((latestAction?.action_photo || []).slice(0, 2));
+
+  const [isSaving, setIsSaving] = useState(false);
+  const [previewDocData, setPreviewDocData] = useState(null);
+
+  const availableBuildings = (db.buildings || []).filter(b => String(b.project_id) === String(selectedProjectId));
+  const selectedBuilding = availableBuildings.find(b => String(b.id) === String(buildingId)) || initialBuilding;
+  const availableFloorplans = selectedBuilding?.floorplans || [];
+  const selectedFloorplan = availableFloorplans.find(f => String(f.id) === String(floorplanId))
+    || (!floorplanId && availableFloorplans.length === 1 ? availableFloorplans[0] : null);
+
+  // Sinkronisasi ulang koordinat & denah awal saat defect dipilih untuk diedit/update
   useEffect(() => {
-    if (!allDefectTypes.includes(formData.defect_type) && allDefectTypes.length > 0 && !isAddingNewType) {
-       setFormData(prev => ({...prev, defect_type: allDefectTypes[0]}));
+    const bldg = (db.buildings || []).find(b => String(b.id) === String(defect.building_id));
+    if (bldg) {
+      setSelectedProjectId(prev => prev || String(bldg.project_id));
+      setBuildingId(prev => prev || String(bldg.id));
     }
-  }, [formData.discipline, allDefectTypes, isAddingNewType]);
 
-  const handleCancelNewType = () => {
-    setIsAddingNewType(false);
-    setNewDefectType('');
-    if (allDefectTypes.length > 0) {
-      setFormData(prev => ({...prev, defect_type: allDefectTypes[0]}));
+    if (defect.floorplan_id !== undefined && defect.floorplan_id !== null && defect.floorplan_id !== '') {
+      setFloorplanId(String(defect.floorplan_id));
+    } else if (bldg?.floorplans?.length === 1) {
+      setFloorplanId(String(bldg.floorplans[0].id));
     }
+
+    const rx = defect.pin_x ?? defect.pinX ?? defect.x;
+    const ry = defect.pin_y ?? defect.pinY ?? defect.y;
+    const px = rx !== undefined && rx !== null && rx !== '' ? Number(rx) : null;
+    const py = ry !== undefined && ry !== null && ry !== '' ? Number(ry) : null;
+
+    if (px !== null && py !== null && !Number.isNaN(px) && !Number.isNaN(py)) {
+      setPinPos({ x: px, y: py });
+      setHasPinned(true);
+    } else if (defect.marked_floorplan_image) {
+      setHasPinned(true);
+      // Deteksi titik merah dari marked_floorplan_image (membandingkan dengan gambar denah asli jika tersedia)
+      const markedImgEl = new Image();
+      markedImgEl.crossOrigin = 'Anonymous';
+      markedImgEl.onload = () => {
+        try {
+          const w = markedImgEl.width;
+          const h = markedImgEl.height;
+          const canvasM = document.createElement('canvas');
+          canvasM.width = w;
+          canvasM.height = h;
+          const ctxM = canvasM.getContext('2d');
+          ctxM.drawImage(markedImgEl, 0, 0);
+          const dataM = ctxM.getImageData(0, 0, w, h).data;
+
+          const matchedFp = bldg?.floorplans?.find(f => String(f.id) === String(defect.floorplan_id))
+            || (bldg?.floorplans?.length === 1 ? bldg.floorplans[0] : null);
+
+          const computeDot = (dataOrig = null) => {
+            let sumX = 0, sumY = 0, count = 0;
+            for (let y = 0; y < h; y += 2) {
+              for (let x = 0; x < w; x += 2) {
+                const idx = (y * w + x) * 4;
+                const r = dataM[idx], g = dataM[idx + 1], b = dataM[idx + 2];
+                const isRed = r > 180 && g < 85 && b < 85 && (r - g) > 100;
+                if (!isRed) continue;
+                if (dataOrig) {
+                  const or = dataOrig[idx], og = dataOrig[idx + 1], ob = dataOrig[idx + 2];
+                  if (Math.abs(r - or) < 40 && Math.abs(g - og) < 40 && Math.abs(b - ob) < 40) continue;
+                }
+                sumX += x;
+                sumY += y;
+                count++;
+              }
+            }
+            if (count > 0) {
+              const detX = Math.round(((sumX / count) / w) * 1000) / 10;
+              const detY = Math.round(((sumY / count) / h) * 1000) / 10;
+              setDetectedRedDot({ x: detX, y: detY });
+              setPinPos({ x: detX, y: detY });
+              setHasPinned(true);
+            }
+          };
+
+          if (matchedFp?.image) {
+            const origImgEl = new Image();
+            origImgEl.crossOrigin = 'Anonymous';
+            origImgEl.onload = () => {
+              try {
+                const canvasO = document.createElement('canvas');
+                canvasO.width = w;
+                canvasO.height = h;
+                const ctxO = canvasO.getContext('2d');
+                ctxO.drawImage(origImgEl, 0, 0, w, h);
+                computeDot(ctxO.getImageData(0, 0, w, h).data);
+              } catch {
+                computeDot(null);
+              }
+            };
+            origImgEl.onerror = () => computeDot(null);
+            origImgEl.src = matchedFp.image;
+          } else {
+            computeDot(null);
+          }
+        } catch (err) {
+          console.warn('Tidak dapat membaca piksel koordinat denah:', err);
+        }
+      };
+      markedImgEl.src = defect.marked_floorplan_image;
+    }
+  }, [defect, db.buildings]);
+
+  const handleDisciplineChange = (val) => {
+    setDiscipline(val);
+    const list = DEFECT_DICTIONARY[val] || ['Lain-lain'];
+    setDefectType(list[0]);
   };
 
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (isAddingNewType && typeContainerRef.current && !typeContainerRef.current.contains(event.target)) {
-        handleCancelNewType();
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isAddingNewType, allDefectTypes]);
-
-  const selectedBuilding = (db.buildings || []).find(b => b.id === formData.building_id);
-  const availableFloorplans = selectedBuilding?.floorplans || [];
-  const selectedFloorplanImage = availableFloorplans.find(fp => fp.id === parseInt(formData.floorplan_id))?.image;
-
-  const handleMapClick = (e) => {
-    if (!selectedFloorplanImage || isDefectSectionDisabled) return; 
-    const rect = e.target.getBoundingClientRect();
+  const handlePinClick = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
-    setMarker({ x, y });
+    setPinPos({ x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 });
+    setHasPinned(true);
   };
 
-  const handlePhotoUpload = async (e) => {
-    if (isDefectSectionDisabled) return;
-    const files = Array.from(e.target.files);
-    const compressedImages = await Promise.all(files.map(f => compressImage(f)));
-    setPhotoPreview([...photoPreview, ...compressedImages]);
-  };
-
-  const handleActionPhotoUpload = async (e) => {
-    if (isActionSectionDisabled) return;
-    const files = Array.from(e.target.files);
-    const compressedImages = await Promise.all(files.map(f => compressImage(f)));
-    setActionPhotoPreview([...actionPhotoPreview, ...compressedImages]);
-  };
-
-  const handleUpdate = async (e) => {
-    e.preventDefault();
-    if (isViewer) return;
-    if (!formData.building_id) { alert('Pilih bangunan!'); return; }
-    
-    try {
-      const markedImage = (marker && selectedFloorplanImage) ? await generateMarkedImage(selectedFloorplanImage, marker.x, marker.y, '#ef4444') : null;
-      
-      let finalInspectorEdit = formData.inspector_edit ? parseInt(formData.inspector_edit) : null;
-      
-      if (formData.status === 'Open') {
-         finalInspectorEdit = null;
-      } else if (isUser) {
-         finalInspectorEdit = parseInt(currentUser.id);
-      } else if (!finalInspectorEdit && (formData.status === 'Close' || formData.status === 'Proses Perbaikan')) {
-         finalInspectorEdit = parseInt(currentUser.id);
-      }
-
-      // Payload untuk defects table 
-      const defectPayload = {
-        inspector_id: formData.inspector_id ? parseInt(formData.inspector_id) : null,
-        project_id: formData.project_id ? parseInt(formData.project_id) : null,
-        building_id: formData.building_id ? parseInt(formData.building_id) : null,
-        floorplan_id: formData.floorplan_id ? formData.floorplan_id.toString() : null,
-        discipline: formData.discipline,
-        defect_type: formData.defect_type,
-        defect_category: formData.defect_category,
-        defect_date: formData.defect_date,
-        sla_days: formData.sla_days ? parseInt(formData.sla_days) : 0,
-        notes: formData.notes,
-        location_x: marker ? marker.x : null,
-        location_y: marker ? marker.y : null,
-        defect_photo: photoPreview,
-        marked_floorplan_image: markedImage || defect.marked_floorplan_image
-      };
-      
-      const resDefect = await fetchSupabase(`defects?id=eq.${defect.id}`, 'PATCH', defectPayload);
-      const updatedDefectRecord = Array.isArray(resDefect) ? resDefect[0] : (resDefect || { ...defect, ...defectPayload });
-      
-      // Payload untuk actions table
-      const actionPayload = {
-        defect_id: defect.id,
-        inspector_id: currentUser?.id ? parseInt(currentUser.id) : null,
-        inspector_edit: finalInspectorEdit,
-        action_date: formData.action_date,
-        status: formData.status,
-        action_note: formData.action_note,
-        action_photo: actionPhotoPreview
-      };
-      
-      const resAction = await fetchSupabase('actions', 'POST', actionPayload);
-      const newActionRecord = Array.isArray(resAction) ? resAction[0] : (resAction || { id: Date.now(), ...actionPayload, created_at: new Date().toISOString() });
-      
-      setDb(prev => ({
-        ...prev, 
-        defects: (prev.defects || []).map(d => d.id === defect.id ? updatedDefectRecord : d),
-        actions: [...(prev.actions || []), newActionRecord]
-      }));
-      
-      alert(`Data Defect ${defect.defect_code} berhasil diupdate ke Cloud!`);
-      onBack();
-    } catch(err) { 
-      console.error("Update Error:", err);
-      alert("Error: " + err.message); 
+  const handlePhotoAdd = async (e, target) => {
+    const files = Array.from(e.target.files || []);
+    const currentList = target === 'defect' ? defectPhotos : actionPhotos;
+    if (currentList.length >= 2) {
+      alert("Maksimum pengambilan/unggah foto adalah 2 foto.");
+      return;
+    }
+    const remaining = 2 - currentList.length;
+    const processed = [];
+    for (const f of files.slice(0, remaining)) {
+      processed.push(await compressImage(f));
+    }
+    if (target === 'defect') {
+      setDefectPhotos(prev => [...prev, ...processed].slice(0, 2));
+    } else {
+      setActionPhotos(prev => [...prev, ...processed].slice(0, 2));
     }
   };
 
-  const handleDelete = async () => {
-    if(!window.confirm("Yakin hapus data ini secara permanen?")) return;
+  const handleUpdate = async (openNcrPrint = false) => {
+    setIsSaving(true);
+    try {
+      const finalDefectType = defectType === 'Lain-lain' && customDefectType.trim() ? customDefectType.trim() : defectType;
+      const markedImg = selectedFloorplan && hasPinned
+        ? await generateMarkedImage(selectedFloorplan.image, pinPos.x, pinPos.y, 'red')
+        : (selectedFloorplan?.image || defect.marked_floorplan_image || null);
+
+      const defectPatch = {
+        building_id: buildingId ? parseInt(buildingId) : defect.building_id,
+        floorplan_id: floorplanId || null,
+        discipline,
+        defect_type: finalDefectType,
+        defect_category: defectCategory,
+        defect_date: defectDate,
+        sla_days: parseInt(slaDays) || 7,
+        notes,
+        pin_x: hasPinned ? pinPos.x : null,
+        pin_y: hasPinned ? pinPos.y : null,
+        marked_floorplan_image: markedImg,
+        defect_photo: defectPhotos.slice(0, 2)
+      };
+
+      await fetchSupabase(`defects?id=eq.${defect.id}`, 'PATCH', defectPatch);
+
+      const actionPayload = {
+        defect_id: defect.id,
+        status,
+        action_date: status === 'Open' ? '-' : actionDate,
+        action_note: actionNote,
+        action_photo: actionPhotos.slice(0, 2),
+        inspector_edit: currentUser?.id || 1
+      };
+
+      let savedAction = null;
+      if (latestAction) {
+        const res = await fetchSupabase(`actions?id=eq.${latestAction.id}`, 'PATCH', actionPayload);
+        savedAction = (res && res[0]) ? res[0] : { ...latestAction, ...actionPayload };
+        setDb(prev => ({
+          ...prev,
+          defects: (prev.defects || []).map(d => d.id === defect.id ? { ...d, ...defectPatch } : d),
+          actions: (prev.actions || []).map(a => a.id === latestAction.id ? savedAction : a)
+        }));
+      } else {
+        const res = await fetchSupabase('actions', 'POST', actionPayload);
+        savedAction = (res && res[0]) ? res[0] : { id: Date.now(), ...actionPayload };
+        setDb(prev => ({
+          ...prev,
+          defects: (prev.defects || []).map(d => d.id === defect.id ? { ...d, ...defectPatch } : d),
+          actions: [...(prev.actions || []), savedAction]
+        }));
+      }
+
+      const mergedPreview = {
+        ...defect,
+        ...defectPatch,
+        current_status: status,
+        action_date: actionPayload.action_date,
+        action_note: actionNote,
+        action_photos: actionPhotos.slice(0, 2),
+        inspector_edit: currentUser?.id || 1
+      };
+
+      if (openNcrPrint) {
+        setPreviewDocData(mergedPreview);
+      } else {
+        alert("Data defect & perbaikan berhasil diperbarui!");
+        onBack();
+      }
+    } catch (err) {
+      alert("Gagal memperbarui data: " + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteDefect = async () => {
     try {
       await fetchSupabase(`actions?defect_id=eq.${defect.id}`, 'DELETE');
       await fetchSupabase(`defects?id=eq.${defect.id}`, 'DELETE');
-    } catch(err) { console.warn("Penghapusan terhenti di cloud:", err.message); }
-    
-    setDb(prev => ({ 
-        ...prev, 
-        defects: (prev.defects || []).filter(d => d.id !== defect.id), 
-        actions: (prev.actions || []).filter(a => a.defect_id !== defect.id) 
-    }));
-    alert('Data dihapus dari database!'); 
-    onBack();
+      setDb(prev => ({
+        ...prev,
+        defects: (prev.defects || []).filter(d => d.id !== defect.id),
+        actions: (prev.actions || []).filter(a => a.defect_id !== defect.id)
+      }));
+      onBack();
+    } catch (err) {
+      alert("Gagal menghapus record: " + err.message);
+    }
   };
-  
-  const slaInfo = calculateSlaStatus(formData.defect_date, formData.sla_days, formData.action_date);
 
-  const missingFields = [];
-  
-  // Validasi form atas hanya dijalankan jika user memang PUNYA akses (bukan readonly)
-  if (!isDefectSectionDisabled) {
-    if (!formData.project_id) missingFields.push("Nama Proyek");
-    if (!formData.building_id) missingFields.push("Bangunan");
-    if (!formData.defect_type || formData.defect_type === '') missingFields.push("Jenis Defect");
-    if (!formData.defect_date) missingFields.push("Tanggal Defect");
-    if (formData.sla_days === '' || formData.sla_days === null || formData.sla_days === undefined) missingFields.push("SLA Perbaikan");
-  }
-
-  // Validasi form bawah (Action)
-  if (!isActionSectionDisabled) {
-    if (!formData.action_date) missingFields.push("Tanggal Selesai Perbaikan");
-    if (!formData.status) missingFields.push("Status Perbaikan");
-    
-    if (formData.status === 'Close') {
-      if (!formData.action_note || formData.action_note.trim() === '') missingFields.push("Catatan Perbaikan");
-      if (actionPhotoPreview.length === 0) missingFields.push("Foto Perbaikan");
-    }
-
-    if (formData.status === 'Close' || formData.status === 'Proses Perbaikan') {
-      // Hanya Admin yang wajib mengisi manual inspector dropdown
-      if (!formData.inspector_edit && isAdmin) {
-        missingFields.push("Inspector Closing Defect");
-      }
-    }
-  }
-  
-  const isUpdateReady = missingFields.length === 0;
+  const isNcr = defectCategory === 'Hard (NCR)';
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 p-6">
-      <div className="flex justify-between items-center mb-6 border-b pb-4 dark:border-gray-700">
-        <h2 className="text-xl font-bold flex items-center gap-2"><button onClick={onBack} className="mr-2 text-gray-500 hover:text-black"><X size={24}/></button><AlertCircle className="text-[#0F4C81]" /> Update / Hapus</h2>
-        <div className="flex items-center gap-2"><span className="px-4 py-1.5 bg-blue-100 text-[#0F4C81] rounded-full text-sm font-bold">{defect.defect_code}</span></div>
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-wrap justify-between items-center gap-4">
+        <div>
+          <span className="text-xs font-black text-[#0F4C81] dark:text-blue-400">{defect.defect_code}</span>
+          <h2 className="text-xl font-black text-slate-800 dark:text-white">{defectType === 'Lain-lain' && customDefectType ? customDefectType : defectType}</h2>
+        </div>
+        <div className="flex items-center gap-3">
+          {currentUser?.role === 'Admin' && (
+            <button type="button" onClick={handleDeleteDefect} className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors">
+              <Trash2 size={16}/> Hapus Record
+            </button>
+          )}
+          <button type="button" onClick={onBack} className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white rounded-xl text-xs font-bold">
+            Kembali
+          </button>
+        </div>
       </div>
 
-      <form onSubmit={handleUpdate} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+      {/* BAGIAN 1: DATA DEFECT (LENGKAP SEPERTI INPUT DEFECT BARU) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-4">
+          <h3 className="text-base font-black text-slate-800 dark:text-white border-b pb-3 border-slate-100 dark:border-slate-700">1. Data Temuan (Input Defect)</h3>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelClass}>Inspector Pelapor</label>
-              <input type="text" className={`w-full p-2.5 rounded-lg border text-sm bg-gray-100 cursor-not-allowed font-medium text-gray-600 dark:text-gray-400`} value={(db.inspectors || []).find(i => i.id === defect.inspector_id)?.name || '-'} readOnly />
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Proyek *</label>
+              <select value={selectedProjectId} onChange={e => { setSelectedProjectId(e.target.value); setBuildingId(''); setFloorplanId(''); }} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                <option value="">-- Pilih Proyek --</option>
+                {(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
+              </select>
             </div>
             <div>
-              <label className={labelClass}>Inspector Closing Defect</label>
-              <select 
-                className={`${inputClassDefect} ${!isAdmin ? 'bg-gray-100 cursor-not-allowed text-gray-500 opacity-70' : ''}`} 
-                value={formData.inspector_edit || ''} 
-                onChange={e => setFormData({...formData, inspector_edit: e.target.value})}
-                disabled={!isAdmin}
-              >
-                <option value="">-- Kosong --</option>
-                {(db.inspectors || []).filter(i => i.authority === 'Admin' || i.authority === 'User').map(i => (
-                  <option key={i.id} value={i.id}>{i.name}</option>
-                ))}
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Object / Building *</label>
+              <select value={buildingId} onChange={e => { setBuildingId(e.target.value); setFloorplanId(''); }} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                <option value="">-- Pilih Building --</option>
+                {availableBuildings.map(b => <option key={b.id} value={b.id}>{b.building_name}</option>)}
               </select>
             </div>
           </div>
-          <div><label className={labelClass}>Nama Proyek</label><select className={inputClassDefect} disabled={isDefectSectionDisabled} required value={formData.project_id} onChange={e => setFormData({...formData, project_id: parseInt(e.target.value), building_id: '', floorplan_id: ''})}><option value="">-- Pilih Proyek --</option>{(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}</select></div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><label className={labelClass}>Bangunan</label><select className={inputClassDefect} disabled={isDefectSectionDisabled} required value={formData.building_id} onChange={e => setFormData({...formData, building_id: parseInt(e.target.value)})}><option value="">-- Pilih --</option>{(db.buildings || []).filter(b => b.project_id === formData.project_id).map(b => <option key={b.id} value={b.id}>{b.building_name}</option>)}</select></div>
-            <div><label className={labelClass}>Denah</label><select className={inputClassDefect} disabled={isDefectSectionDisabled || availableFloorplans.length === 0} value={formData.floorplan_id} onChange={e => {setFormData({...formData, floorplan_id: e.target.value}); setMarker(null);}}>{availableFloorplans.length === 0 ? <option value="">(Kosong)</option> : availableFloorplans.map(fp => <option key={fp.id} value={fp.id}>{fp.name}</option>)}</select></div>
-          </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className={labelClass}>Disiplin</label><select className={inputClassDefect} disabled={isDefectSectionDisabled} value={formData.discipline} onChange={e => setFormData({...formData, discipline: e.target.value, defect_type: ''})}><option>Struktur</option><option>Arsitektur</option><option>MEP</option><option>Landscape</option><option>Infrastructure</option><option>Interior</option><option>General</option></select></div>
-            <div><label className={labelClass}>Kategori</label><select className={inputClassDefect} disabled={isDefectSectionDisabled} value={formData.defect_category} onChange={e => setFormData({...formData, defect_category: e.target.value})}><option>Minor</option><option>Major</option><option>Hard (NCR)</option></select></div>
-          </div>
-
-          <div ref={typeContainerRef} onBlur={(e) => {
-             if (isAddingNewType && typeContainerRef.current && !typeContainerRef.current.contains(e.relatedTarget)) {
-               handleCancelNewType();
-             }
-          }}>
-            <label className={labelClass}>Jenis Defect</label>
-            {!isAddingNewType ? (
-              <select className={inputClassDefect} disabled={isDefectSectionDisabled} value={formData.defect_type} onChange={e => { if(e.target.value === 'NEW') setIsAddingNewType(true); else setFormData({...formData, defect_type: e.target.value}); }}>
-                {allDefectTypes.map(type => <option key={type} value={type}>{type}</option>)}
-                {!isDefectSectionDisabled && <option value="NEW" className="text-blue-600 font-bold">+ Tambah Baru...</option>}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Disiplin Pekerjaan</label>
+              <select value={discipline} onChange={e => handleDisciplineChange(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                {Object.keys(DEFECT_DICTIONARY).map(d => <option key={d} value={d}>{d}</option>)}
               </select>
-            ) : (
-              <div className="flex flex-col gap-2 p-3 bg-gray-100 rounded-lg border">
-                <input type="text" className={inputClassDefect} disabled={isDefectSectionDisabled} placeholder="Ketik baru..." value={newDefectType} onChange={e => setNewDefectType(e.target.value)} autoFocus />
-                <div className="flex gap-2 justify-end">
-                  <button type="button" onClick={handleCancelNewType} className="px-3 py-1 bg-gray-400 text-white text-xs rounded">Cancel</button>
-                  <button type="button" onClick={() => { 
-                    if (newDefectType.trim()) { 
-                      setDynamicDefectTypes([...dynamicDefectTypes, newDefectType.trim()]); 
-                      setFormData({...formData, defect_type: newDefectType.trim()}); 
-                    } else {
-                      if (allDefectTypes.length > 0) setFormData(prev => ({...prev, defect_type: allDefectTypes[0]}));
-                    }
-                    setIsAddingNewType(false); 
-                    setNewDefectType(''); 
-                  }} className="px-3 py-1 bg-[#0F4C81] text-white text-xs rounded">Simpan</button>
-                </div>
-              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Klasifikasi Temuan</label>
+              <select value={defectCategory} onChange={e => setDefectCategory(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${defectCategory === 'Hard (NCR)' ? 'border-rose-500 text-rose-600 bg-rose-50/40' : (darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200')}`}>
+                <option value="Minor">Minor</option>
+                <option value="Major">Major</option>
+                <option value="Hard (NCR)">Hard (NCR)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Detail Temuan / Defect</label>
+            <select value={defectType} onChange={e => setDefectType(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+              {(DEFECT_DICTIONARY[discipline] || ['Lain-lain']).map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+            {defectType === 'Lain-lain' && (
+              <input type="text" value={customDefectType} onChange={e => setCustomDefectType(e.target.value)} placeholder="Tuliskan detail temuan spesifik..." className={`mt-2 w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className={labelClass}>Tanggal Defect</label><input type="date" disabled={isDefectSectionDisabled} className={inputClassDefect} required value={formData.defect_date} onChange={e => setFormData({...formData, defect_date: e.target.value})} /></div>
-            <div><label className={labelClass}>SLA (Hari)</label><input type="number" min="0" disabled={isDefectSectionDisabled} className={inputClassDefect} required value={formData.sla_days} onChange={e => setFormData({...formData, sla_days: parseInt(e.target.value) || 0})} /></div>
-          </div>
-          
-          <div className="grid grid-cols-2 gap-4 border-t pt-4 mt-2">
-            <div><label className={labelClass}>Tanggal Selesai Perbaikan</label><input type="date" disabled={isActionSectionDisabled} className={inputClassAction} required value={formData.action_date} onChange={e => setFormData({...formData, action_date: e.target.value})} /></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelClass}>Status Perbaikan</label>
-              <select className={inputClassAction} disabled={isActionSectionDisabled} value={formData.status} onChange={e => {
-                const val = e.target.value;
-                let newInsp = formData.inspector_edit;
-                if (val === 'Open') {
-                  newInsp = ''; 
-                } else if ((val === 'Close' || val === 'Proses Perbaikan') && (!isAdmin)) {
-                  newInsp = currentUser?.id; 
-                }
-                setFormData({...formData, status: val, inspector_edit: newInsp});
-              }}>
-                <option value="Open">Open</option>
-                <option value="Proses Perbaikan">Proses Perbaikan</option>
-                <option value="Close">Close (Selesai)</option>
-              </select>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Tanggal Temuan</label>
+              <input type="date" value={defectDate} onChange={e => setDefectDate(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
             </div>
-            <div className="col-span-2 bg-gray-50 p-3 rounded-lg border flex justify-between text-sm"><span className="font-bold text-gray-600">Status SLA (Terkalkulasi Real-time):</span><span className={slaInfo.style}>{slaInfo.text}</span></div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Target Close SLA (Hari)</label>
+              <input type="number" min="1" value={slaDays} onChange={e => setSlaDays(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Catatan Temuan (Finding Note)</label>
+            <textarea rows="3" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Jelaskan kronologi atau detail lokasi temuan..." className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Bukti Foto Defect ({defectPhotos.length}/2 Maks.)</label>
+            {defectPhotos.length < 2 && (
+              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                <Camera size={18}/> Ambil / Upload Foto ({2 - defectPhotos.length} slot tersisa)
+                <input type="file" accept="image/*" multiple onChange={e => handlePhotoAdd(e, 'defect')} className="hidden" />
+              </label>
+            )}
+            {defectPhotos.length > 0 && (
+              <div className="grid grid-cols-2 gap-3 mt-3">
+                {defectPhotos.map((src, i) => (
+                  <div key={i} className="relative h-32 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
+                    <img src={src} alt="Defect" className="w-full h-full object-cover" />
+                    <button type="button" onClick={() => setDefectPhotos(prev => prev.filter((_, idx) => idx !== i))} className="absolute top-1.5 right-1.5 p-1.5 bg-rose-600 text-white rounded-lg shadow"><Trash2 size={14}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="space-y-6">
-          <div>
-            <label className={labelClass}>Lokasi Defect pada Denah</label>
-            <div className={`relative w-full aspect-video rounded-xl overflow-hidden border-2 ${selectedFloorplanImage ? (isDefectSectionDisabled ? 'border-solid cursor-not-allowed' : 'border-dashed cursor-crosshair') : 'border-solid cursor-not-allowed'} bg-gray-100`} onClick={isDefectSectionDisabled ? undefined : handleMapClick}>
-              {selectedFloorplanImage ? <><img src={selectedFloorplanImage} className="w-full h-full object-contain pointer-events-none" />{!marker && !isDefectSectionDisabled && <div className="absolute inset-0 flex items-center justify-center bg-black/10"><div className="bg-white/80 px-4 py-2 rounded-full text-sm font-medium"><MapPin size={16}/> Klik untuk tandai</div></div>}</> : <div className="absolute inset-0 flex items-center justify-center text-gray-400"><MapPin size={32} /></div>}
-              {marker && <div className="absolute w-6 h-6 bg-red-500 border-2 border-white rounded-full shadow-lg transform -translate-x-1/2 -translate-y-1/2 pointer-events-none" style={{ left: `${marker.x}%`, top: `${marker.y}%` }} />}
-            </div>
-          </div>
-          
-          <div><label className={labelClass}>Catatan Tambahan (Defect)</label><textarea rows="2" disabled={isDefectSectionDisabled} className={inputClassDefect} value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}></textarea></div>
-
-          <div>
-            <label className={labelClass}>Foto Defect</label>
-            <div className="flex gap-2 overflow-x-auto py-2">
-              <label className={`flex-shrink-0 w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl ${isDefectSectionDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}><UploadCloud size={20} className="text-gray-400 mb-1" /><span className="text-[10px]">Dari File</span><input type="file" disabled={isDefectSectionDisabled} multiple accept="image/*" className="hidden" onChange={handlePhotoUpload} /></label>
-              <label className={`flex-shrink-0 w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl ${isDefectSectionDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}><Camera size={20} className="text-gray-400 mb-1" /><span className="text-[10px]">Kamera HP</span><input type="file" disabled={isDefectSectionDisabled} multiple accept="image/*" capture="environment" className="hidden" onChange={handlePhotoUpload} /></label>
-              {photoPreview.map((src, idx) => <div key={idx} className="flex-shrink-0 w-20 h-20 rounded-xl overflow-hidden relative border"><img src={src} className="w-full h-full object-cover" />{!isDefectSectionDisabled && <button type="button" onClick={() => setPhotoPreview(photoPreview.filter((_, i) => i !== idx))} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1"><X size={10}/></button>}</div>)}
-            </div>
+        {/* Interactive Floorplan Pinpoint */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-3 border-slate-100 dark:border-slate-700">
+            <h3 className="text-base font-black text-slate-800 dark:text-white flex items-center gap-2"><MapPin size={18} className="text-rose-500"/> Penitikan Lokasi pada Denah</h3>
+            <select value={floorplanId} onChange={e => setFloorplanId(e.target.value)} className={`p-2.5 rounded-xl border-2 text-xs font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+              <option value="">-- Pilih Denah / Layout --</option>
+              {availableFloorplans.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
           </div>
 
-          <div><label className={labelClass}>Catatan Perbaikan</label><textarea rows="2" disabled={isActionSectionDisabled} className={inputClassAction} value={formData.action_note} onChange={e => setFormData({...formData, action_note: e.target.value})}></textarea></div>
-
-          <div>
-            <label className={labelClass}>Foto Perbaikan</label>
-            <div className="flex gap-2 overflow-x-auto py-2">
-              <label className={`flex-shrink-0 w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl ${isActionSectionDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}><UploadCloud size={20} className="text-gray-400 mb-1" /><span className="text-[10px]">Dari File</span><input type="file" disabled={isActionSectionDisabled} multiple accept="image/*" className="hidden" onChange={handleActionPhotoUpload} /></label>
-              <label className={`flex-shrink-0 w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl ${isActionSectionDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}><Camera size={20} className="text-gray-400 mb-1" /><span className="text-[10px]">Kamera HP</span><input type="file" disabled={isActionSectionDisabled} multiple accept="image/*" capture="environment" className="hidden" onChange={handleActionPhotoUpload} /></label>
-              {actionPhotoPreview.map((src, idx) => <div key={idx} className="flex-shrink-0 w-20 h-20 rounded-xl overflow-hidden relative border"><img src={src} className="w-full h-full object-cover" />{!isActionSectionDisabled && <button type="button" onClick={() => setActionPhotoPreview(actionPhotoPreview.filter((_, i) => i !== idx))} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1"><X size={10}/></button>}</div>)}
-            </div>
-          </div>
-        </div>
-
-        <div className="col-span-1 lg:col-span-2 pt-4 border-t flex flex-col items-end gap-2 mt-4">
-          {(() => {
-            const canDelete = isAdmin || (isReporter && !isViewer); 
-            const canUpdate = isUpdateReady && !isViewer && (isAdmin || isReporter || (isUser && isStatusOpenOrProses));
-            
-            return (
-              <>
-                {!isUpdateReady && !isViewer && (isAdmin || isReporter || (isUser && isStatusOpenOrProses)) && (
-                  <div className="text-red-500 text-sm font-medium mb-4 bg-red-50 px-4 py-3 rounded-lg border border-red-200">
-                    🚨 <b>Aksi Tertahan:</b> Data belum lengkap! Lengkapi data berikut agar tombol Update aktif: <br/><span className="text-red-700 font-bold">{missingFields.join(', ')}</span>
+          <div className="flex-1 min-h-[360px] rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-center overflow-hidden relative">
+            {selectedFloorplan ? (
+              <div onClick={handlePinClick} className="relative cursor-crosshair inline-block max-w-full">
+                <img src={selectedFloorplan.image} alt="Floorplan" className="max-h-[460px] w-auto object-contain select-none" />
+                {hasPinned && (
+                  <div
+                    style={{ left: `${pinPos.x}%`, top: `${pinPos.y}%` }}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10 flex flex-col items-center"
+                  >
+                    <div className="w-7 h-7 rounded-full bg-rose-600 border-2 border-white shadow-lg flex items-center justify-center text-white text-[11px] font-black animate-bounce">
+                      !
+                    </div>
+                    <span className="mt-0.5 px-1.5 py-0.5 rounded bg-slate-900/85 text-white text-[9px] font-bold whitespace-nowrap shadow">
+                      {pinPos.x}%, {pinPos.y}%
+                    </span>
                   </div>
                 )}
-                <div className="flex gap-4">
-                  <button type="button" onClick={canDelete ? handleDelete : undefined} disabled={!canDelete} className={`px-6 py-2.5 rounded-xl font-bold flex items-center gap-2 text-sm transition-colors shadow-sm ${canDelete ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} title={!canDelete ? "Akses Hapus Ditolak" : ""}><Trash2 size={18} /> Hapus</button>
-                  <button type="submit" disabled={!canUpdate} className={`px-6 py-2.5 rounded-xl font-bold flex items-center gap-2 text-sm transition-all shadow-md ${canUpdate ? 'bg-[#0F4C81] hover:bg-blue-800 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} title={!canUpdate ? "Akses Update Ditolak" : ""}><Edit size={18} /> Update</button>
-                </div>
-              </>
-            )
-          })()}
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function ActionView({ db, setDb, currentUser, darkMode }) {
-  const [selectedDefect, setSelectedDefect] = useState(null);
-  const [search, setSearch] = useState('');
-  
-  const getDefectStatus = (defectId) => {
-    const actions = (db.actions || []).filter(a => a.defect_id === defectId);
-    if(actions.length === 0) return 'Open';
-    return actions[actions.length - 1].status;
-  };
-
-  const filteredDefects = (db.defects || []).filter(d => search === '' || d.defect_code === search || (db.buildings || []).find(b=>b.id===d.building_id)?.building_name.toLowerCase().includes(search.toLowerCase())).map(d => ({ ...d, current_status: getDefectStatus(d.id) })).sort((a, b) => new Date(b.created_at || b.defect_date) - new Date(a.created_at || a.defect_date));
-  
-  const handleDeleteDefect = async (id) => {
-    if(!window.confirm("Yakin hapus data ini secara permanen?")) return;
-    try {
-      await fetchSupabase(`actions?defect_id=eq.${id}`, 'DELETE');
-      await fetchSupabase(`defects?id=eq.${id}`, 'DELETE');
-    } catch(err) { console.warn("Peringatan cloud:", err.message); }
-    setDb(prev => ({ ...prev, defects: (prev.defects || []).filter(d => d.id !== id), actions: (prev.actions || []).filter(a => a.defect_id !== id) }));
-  };
-
-  if (selectedDefect) return <ActionDetailView defect={selectedDefect} onBack={() => setSelectedDefect(null)} db={db} setDb={setDb} darkMode={darkMode} currentUser={currentUser} />;
-
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 flex flex-col h-[calc(100vh-10rem)]">
-      <div className="p-4 border-b dark:border-gray-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50 rounded-t-2xl">
-        <h2 className="text-lg font-bold">Daftar Defect</h2>
-        <div className="relative w-full sm:w-auto min-w-[250px]">
-          <input type="text" list="defect-list" placeholder="Ketik Kode Defect..." className="w-full pl-4 py-2 border rounded-full text-sm" value={search} onChange={e => { setSearch(e.target.value); const dOpen = (db.defects || []).find(d => d.defect_code === e.target.value); if(dOpen) setSelectedDefect({...dOpen, current_status: getDefectStatus(dOpen.id)}); }} />
-          <datalist id="defect-list">{(db.defects || []).map(d => <option key={d.id} value={d.defect_code}>{d.defect_code} - {(db.buildings || []).find(b=>b.id===d.building_id)?.building_name}</option>)}</datalist>
+              </div>
+            ) : defect.marked_floorplan_image ? (
+              <div className="relative inline-block max-w-full">
+                <img src={defect.marked_floorplan_image} alt="Marked Floorplan" className="max-h-[460px] w-auto object-contain select-none" />
+                {(hasExplicitPin || detectedRedDot) && (
+                  <div
+                    style={{ left: `${pinPos.x}%`, top: `${pinPos.y}%` }}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10 flex flex-col items-center"
+                  >
+                    <div className="w-7 h-7 rounded-full bg-rose-600 border-2 border-white shadow-lg flex items-center justify-center text-white text-[11px] font-black">
+                      !
+                    </div>
+                    <span className="mt-0.5 px-1.5 py-0.5 rounded bg-slate-900/85 text-white text-[9px] font-bold whitespace-nowrap shadow">
+                      {pinPos.x}%, {pinPos.y}%
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs font-bold text-slate-400 text-center px-6">Pilih Proyek, Building, dan Denah untuk menandai titik lokasi defect.</p>
+            )}
+          </div>
+          {hasPinned && (
+            <p className="text-xs font-bold text-emerald-600 text-center">
+              {hasExplicitPin || detectedRedDot
+                ? `Titik koordinat defect awal pada denah: X = ${pinPos.x}%, Y = ${pinPos.y}%`
+                : 'Titik lokasi defect terpasang pada gambar denah tersimpan'}
+            </p>
+          )}
         </div>
       </div>
-      <div className="flex-1 overflow-auto p-4 space-y-3">
-        {filteredDefects.length === 0 ? <p className="text-center py-10 text-gray-500 text-sm">Tidak ada data ditemukan.</p> : null}
-        {filteredDefects.map(d => {
-          const actionDate = (db.actions || []).filter(a => a.defect_id === d.id).slice(-1)[0]?.action_date || '-';
-          const slaInfo = calculateSlaStatus(d.defect_date, d.sla_days, actionDate);
-          const isAdmin = currentUser?.role === 'Admin';
-          const canDelete = isAdmin || (String(d.inspector_id) === String(currentUser?.id) && currentUser?.role !== 'Viewer');
-          return (
-          <div key={d.id} className="p-4 rounded-xl border hover:shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="font-bold text-[#0F4C81]">{d.defect_code}</span>
-                <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${d.current_status === 'Close' ? 'bg-green-100 text-green-700' : d.current_status === 'Open' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>{d.current_status}</span>
-                <span className={`text-xs ${slaInfo.style}`}>SLA: {slaInfo.text}</span>
+
+      {/* BAGIAN 2: INPUT DATA ACTION / CORRECTION */}
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-4">
+        <h3 className="text-base font-black text-slate-800 dark:text-white border-b pb-3 border-slate-100 dark:border-slate-700">2. Input Data Action & Perbaikan (Action / Correction)</h3>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Status Perbaikan</label>
+                <select value={status} onChange={e => setStatus(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                  <option value="Open">Open</option>
+                  <option value="Proses Perbaikan">Proses Perbaikan</option>
+                  <option value="Close">Close</option>
+                </select>
               </div>
-              <p className="text-sm font-medium">{(db.buildings || []).find(b=>b.id===d.building_id)?.building_name}</p>
-              <p className="text-xs text-gray-500">{d.defect_type} • {d.defect_category}</p>
-              <p className="text-xs text-gray-500 mt-1">Inspector Pelapor: <span className="font-semibold">{(db.inspectors || []).find(i => i.id === d.inspector_id)?.name || '-'}</span></p>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Tanggal Closing / Update</label>
+                <input type="date" value={actionDate} onChange={e => setActionDate(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-bold outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+              </div>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => canDelete ? handleDeleteDefect(d.id) : undefined} disabled={!canDelete} className={`px-3 py-2 rounded-lg flex items-center justify-center ${canDelete ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`} title={canDelete ? "Hapus Defect" : "Hanya Admin atau inspector pelapor yang bisa menghapus"}><Trash2 size={16} /></button>
-              <button onClick={() => setSelectedDefect(d)} className="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 bg-[#0F4C81] text-white"><Edit size={16} /> Update</button>
+
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Catatan Perbaikan (Action Note)</label>
+              <textarea rows="3" value={actionNote} onChange={e => setActionNote(e.target.value)} placeholder="Jelaskan tindakan perbaikan yang telah dilakukan..." className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
             </div>
           </div>
-        )})}
+
+          <div className="space-y-3">
+            <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Foto Hasil Perbaikan ({actionPhotos.length}/2 Maks.)</label>
+            {actionPhotos.length < 2 && (
+              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-500">
+                <Camera size={18}/> Upload Foto Perbaikan ({2 - actionPhotos.length} slot tersisa)
+                <input type="file" accept="image/*" multiple onChange={e => handlePhotoAdd(e, 'action')} className="hidden" />
+              </label>
+            )}
+            {actionPhotos.length > 0 && (
+              <div className="grid grid-cols-2 gap-3 mt-2">
+                {actionPhotos.map((src, i) => (
+                  <div key={i} className="relative h-32 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
+                    <img src={src} alt="Action" className="w-full h-full object-cover" />
+                    <button type="button" onClick={() => setActionPhotos(prev => prev.filter((_, idx) => idx !== i))} className="absolute top-1.5 right-1.5 p-1.5 bg-rose-600 text-white rounded-lg shadow"><Trash2 size={14}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-slate-100 dark:border-slate-700 flex flex-col sm:flex-row gap-3">
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={() => handleUpdate(false)}
+            className="flex-1 py-4 px-6 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-md transition-all disabled:opacity-60"
+          >
+            <Save size={18}/> {isSaving ? 'Menyimpan...' : 'Simpan Data'}
+          </button>
+          <button
+            type="button"
+            disabled={!isNcr || isSaving}
+            onClick={() => handleUpdate(true)}
+            className={`flex-1 py-4 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+              isNcr
+                ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md cursor-pointer'
+                : 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
+            }`}
+          >
+            <Printer size={18}/> Print NCR & Simpan
+          </button>
+        </div>
       </div>
+
+      {previewDocData && (
+        <DocumentFormPreviewModal data={previewDocData} db={db} onClose={() => setPreviewDocData(null)} />
+      )}
     </div>
   );
 }
 
 // --- REPORT VIEW ---
 function ReportView({ db, darkMode }) {
-  const [filterStatus, setFilterStatus] = useState('All');
-  const [reportType, setReportType] = useState('tanpa_foto'); 
-  const [sortOption, setSortOption] = useState('ID_DEFECT'); 
-  const [selectedBuildingFilter, setSelectedBuildingFilter] = useState('');
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [selectedProject, setSelectedProject] = useState('ALL');
+  const [selectedStatus, setSelectedStatus] = useState('ALL');
+  const [groupBy, setGroupBy] = useState('id');
+  const [attachmentMode, setAttachmentMode] = useState('ringkas');
+  const [selectedDocItem, setSelectedDocItem] = useState(null);
+  const [isPrintingReport, setIsPrintingReport] = useState(false);
 
-  const getDefectStatus = (defectId) => {
-    const actions = (db.actions || []).filter(a => a.defect_id === defectId);
-    if(actions.length === 0) return 'Open';
-    return actions[actions.length - 1].status;
-  };
+  const enrichedDefects = (db.defects || []).map(d => {
+    const bldg = (db.buildings || []).find(b => b.id === d.building_id);
+    const proj = bldg ? (db.projects || []).find(p => p.id === bldg.project_id) : null;
+    const fp = bldg && bldg.floorplans ? bldg.floorplans.find(f => String(f.id) === String(d.floorplan_id)) : null;
+    const acts = (db.actions || []).filter(a => a.defect_id === d.id);
+    const lastAct = acts.length > 0 ? acts[acts.length - 1] : null;
+    const inspectorObj = (db.inspectors || []).find(i => String(i.id) === String(d.inspector_id));
 
-  let reportData = (db.defects || []).map(d => {
-    const b = (db.buildings || []).find(b=>b.id===d.building_id);
-    const p = b ? (db.projects || []).find(p=>p.id===b.project_id) : null;
-    
-    const latestAction = (db.actions || []).filter(a => a.defect_id === d.id).slice(-1)[0];
-    const inspector_edit_val = latestAction?.inspector_edit || d.inspector_edit;
-    const i_close = (db.inspectors || []).find(i=>i.id === inspector_edit_val);
-    const close_by_name = i_close ? i_close.initial : '-';
-    
-    const current_status = getDefectStatus(d.id);
-    const action_photos = latestAction ? latestAction.action_photo : [];
-    const action_date = latestAction ? latestAction.action_date : '-';
-    const action_note = latestAction ? latestAction.action_note : '-';
-    
-    const fp = b && b.floorplans ? b.floorplans.find(f => f.id === parseInt(d.floorplan_id)) : null;
-    const floorplan_name = fp ? fp.name.replace(/\.[^/.]+$/, "") : '-';
-    const floorplan_image = d.marked_floorplan_image || (fp ? fp.image : null);
-    
     return {
-      ...d, building_name: b ? b.building_name : '-', building_id: b ? b.id : '', project_name: p ? p.project_name : '-', close_by_name, current_status, action_photos, action_date, action_note, floorplan_name, floorplan_image
+      ...d,
+      project_id: proj?.id,
+      project_name: proj?.project_name || '-',
+      building_name: bldg?.building_name || '-',
+      floorplan_name: fp ? fp.name.replace(/\.[^/.]+$/, "") : '-',
+      floorplan_image: d.marked_floorplan_image || (fp ? fp.image : null),
+      inspector_name: inspectorObj?.name || '-',
+      current_status: lastAct ? lastAct.status : 'Open',
+      action_date: lastAct && lastAct.action_date ? lastAct.action_date : '-',
+      action_note: lastAct && lastAct.action_note ? lastAct.action_note : '',
+      action_photos: lastAct ? lastAct.action_photo : [],
+      inspector_edit: lastAct ? lastAct.inspector_edit : null
     };
-  }).filter(d => filterStatus === 'All' ? true : d.current_status === filterStatus);
+  });
 
-  if (sortOption === 'BANGUNAN') { reportData.sort((a, b) => a.building_name.localeCompare(b.building_name)); } 
-  else if (sortOption === 'SPESIFIK' && selectedBuildingFilter) { reportData = reportData.filter(d => d.building_id === parseInt(selectedBuildingFilter)); }
-
-  const stats = {
-    total: reportData.length, open: reportData.filter(d=>d.current_status === 'Open').length, proses: reportData.filter(d=>d.current_status === 'Proses Perbaikan').length, close: reportData.filter(d=>d.current_status === 'Close').length,
-  };
-
-  const uniqueProjects = [...new Set(reportData.map(d=>d.project_name))].filter(n => n !== '-');
-  const projectTitle = uniqueProjects.length === 1 ? uniqueProjects[0] : (uniqueProjects.length > 1 ? 'Semua Proyek' : '-');
-
-  const exportExcel = () => {
-    let tableHtml = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8"></head><body>
-        <h3>LAPORAN QUALITY CONTROL</h3><p>Nama Proyek : ${projectTitle}</p><p>Tanggal cetak : ${new Date().toLocaleDateString('id-ID')}</p><br/>
-        <table border="1" style="border-collapse: collapse;">
-          <thead>
-            <tr style="background-color: #f3f4f6;">
-              <th>No</th><th>ID Defect</th><th>Tanggal<br/>Defect</th><th>Bangunan</th><th>Lokasi<br/>Denah</th><th>Disiplin</th><th>Kategori</th><th>Jenis Defect</th>
-              ${reportType === 'dengan_foto' ? '<th>Denah (Gambar)</th><th>Foto Defect</th>' : ''}
-              <th>Catatan Tambahan</th><th>SLA</th><th>Tanggal<br/>Perbaikan</th>
-              ${reportType === 'dengan_foto' ? '<th>Foto Perbaikan</th>' : ''}
-              <th>Catatan Perbaikan</th><th>Close By</th><th>Status</th>
-            </tr>
-          </thead><tbody>
-    `;
-
-    reportData.forEach((d, i) => {
-      let floorplanImageHtml = ''; let defectPhotosHtml = ''; let actionPhotosHtml = '';
-      const slaInfo = calculateSlaStatus(d.defect_date, d.sla_days, d.action_date);
-      const slaStyle = slaInfo.isLate ? 'color: red; font-weight: bold;' : 'color: green; font-weight: bold;';
-
-      if (reportType === 'dengan_foto') {
-        const tdStyle = "vertical-align: middle; text-align: center; height: 130px; width: 130px;";
-        const imgStyle = "max-height: 120px; max-width: 120px; object-fit: contain;";
-        
-        floorplanImageHtml = d.floorplan_image ? `<td style="${tdStyle}"><img src="${d.floorplan_image}" style="${imgStyle}" /></td>` : `<td style="${tdStyle}">-</td>`;
-        defectPhotosHtml = d.defect_photo && d.defect_photo.length > 0 ? `<td style="${tdStyle}">${d.defect_photo.map(p => `<img src="${p}" style="${imgStyle} margin-right: 5px;" />`).join('')}</td>` : `<td style="${tdStyle}">-</td>`;
-        actionPhotosHtml = d.action_photos && d.action_photos.length > 0 ? `<td style="${tdStyle}">${d.action_photos.map(p => `<img src="${p}" style="${imgStyle} margin-right: 5px;" />`).join('')}</td>` : `<td style="${tdStyle}">-</td>`;
-      }
-
-      tableHtml += `<tr>
-        <td style="vertical-align: middle; text-align: center;">${i + 1}</td>
-        <td style="vertical-align: middle;">${d.defect_code}</td>
-        <td style="vertical-align: middle;">${d.defect_date}</td>
-        <td style="vertical-align: middle;">${d.building_name}</td>
-        <td style="vertical-align: middle;">${d.floorplan_name}</td>
-        <td style="vertical-align: middle;">${d.discipline}</td>
-        <td style="vertical-align: middle;">${d.defect_category}</td>
-        <td style="vertical-align: middle;">${d.defect_type}</td>
-        ${reportType === 'dengan_foto' ? `${floorplanImageHtml}${defectPhotosHtml}` : ''}
-        <td style="vertical-align: middle;">${d.notes || '-'}</td>
-        <td style="vertical-align: middle; ${slaStyle}">${slaInfo.text}</td>
-        <td style="vertical-align: middle;">${d.action_date}</td>
-        ${reportType === 'dengan_foto' ? `${actionPhotosHtml}` : ''}
-        <td style="vertical-align: middle;">${d.action_note || '-'}</td>
-        <td style="vertical-align: middle; text-align: center;">${d.close_by_name}</td>
-        <td style="vertical-align: middle; font-weight: bold;">${d.current_status}</td>
-      </tr>`;
+  const filteredReport = enrichedDefects
+    .filter(item => {
+      const matchProj = selectedProject === 'ALL' || String(item.project_id) === String(selectedProject);
+      const matchStat = selectedStatus === 'ALL' || item.current_status === selectedStatus;
+      return matchProj && matchStat;
+    })
+    .sort((a, b) => {
+      if (groupBy === 'building') return (a.building_name || '').localeCompare(b.building_name || '');
+      if (groupBy === 'discipline') return (a.discipline || '').localeCompare(b.discipline || '');
+      if (groupBy === 'category') return (a.defect_category || '').localeCompare(b.defect_category || '');
+      return String(b.defect_code || '').localeCompare(String(a.defect_code || ''));
     });
 
-    tableHtml += `</tbody></table></body></html>`;
-    const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `PQCS_Report_${new Date().toISOString().slice(0,10)}.xls`; a.click();
+  const summary = {
+    total: filteredReport.length,
+    open: filteredReport.filter(r => r.current_status === 'Open').length,
+    inProgress: filteredReport.filter(r => r.current_status === 'Proses Perbaikan').length,
+    closed: filteredReport.filter(r => r.current_status === 'Close').length,
   };
 
-  const handlePrint = () => {
-    setIsExportingPDF(true);
+  const selectedProjectTitle = selectedProject === 'ALL'
+    ? ((db.projects || []).length === 1 ? db.projects[0].project_name : 'SELURUH PROYEK')
+    : ((db.projects || []).find(p => String(p.id) === String(selectedProject))?.project_name || 'PROYEK TERPILIH');
+
+  const handleExportCSV = () => {
+    const headers = ['No', 'ID Defect', 'Tgl Temuan', 'Bangunan', 'Denah', 'Disiplin', 'Kategori', 'Jenis Temuan', 'Catatan Awal', 'Info SLA', 'Tgl Selesai', 'Catatan Action'];
+    const rows = filteredReport.map((r, idx) => {
+      const sla = calculateSlaStatus(r.defect_date, r.sla_days, r.action_date);
+      return [
+        idx + 1,
+        r.defect_code,
+        r.defect_date,
+        r.building_name,
+        r.floorplan_name,
+        r.discipline,
+        r.defect_category,
+        r.defect_type,
+        r.notes || '-',
+        sla.text,
+        r.action_date || '-',
+        r.action_note || '-'
+      ];
+    });
+    const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].map(e => e.map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(",")).join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Laporan_QC_${selectedProjectTitle.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handlePrintReportPDF = () => {
+    setIsPrintingReport(true);
     setTimeout(() => {
-      const element = document.getElementById('printable-area');
-      const opt = { 
-        margin: [10, 5, 10, 5],
-        filename: `PQCS_Report_${new Date().toISOString().slice(0,10)}.pdf`, 
-        image: { type: 'jpeg', quality: 1 }, 
-        html2canvas: { scale: 2, useCORS: true }, 
-        jsPDF: { unit: 'mm', format: 'a3', orientation: 'landscape' }
+      const element = document.getElementById('pqcs-report-table-printable');
+      const opt = {
+        margin: [6, 6, 6, 6],
+        filename: `Laporan_QC_${selectedProjectTitle.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
       };
-      if (window.html2pdf) { window.html2pdf().set(opt).from(element).save().then(() => setIsExportingPDF(false));
+      const execute = (h2p) => h2p().set(opt).from(element).save().then(() => setIsPrintingReport(false));
+      if (window.html2pdf) {
+        execute(window.html2pdf);
       } else {
-         const script = document.createElement('script'); script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-         script.onload = () => { window.html2pdf().set(opt).from(element).save().then(() => setIsExportingPDF(false)); };
-         document.head.appendChild(script);
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+        script.onload = () => execute(window.html2pdf);
+        document.head.appendChild(script);
       }
-    }, 500); 
+    }, 350);
   };
-
-  const imgClass = reportType === 'dengan_foto' ? "max-h-24 max-w-full object-contain mx-auto border border-gray-300 rounded shadow-sm bg-white" : "";
-  const thClass = "px-1.5 py-2 border border-gray-400 align-middle text-center font-bold bg-gray-200 text-[10px] text-black";
-  const tdClass = "px-1.5 py-2 border border-gray-400 align-middle text-[10px] whitespace-normal break-words text-black";
-  const tdPhotoClass = "px-1.5 py-2 border border-gray-400 align-middle text-center";
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 flex flex-col h-[calc(100vh-8rem)]">
-      <div className="p-4 border-b dark:border-gray-700 flex flex-col gap-4 print:hidden bg-gray-50 rounded-t-2xl">
-        <div className="flex flex-wrap justify-between items-center gap-4">
-          <div className="flex flex-col gap-3 w-full lg:w-auto">
-            <div className="flex gap-4">
-              <div className="flex items-center gap-2"><label className="text-sm font-medium">Filter Status:</label><select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="border rounded-lg px-3 py-1.5 text-sm"><option value="All">Semua Status</option><option value="Open">Open</option><option value="Proses Perbaikan">Proses Perbaikan</option><option value="Close">Close</option></select></div>
-              <div className="flex items-center gap-2"><label className="text-sm font-medium">Format Lampiran:</label><select value={reportType} onChange={e=>setReportType(e.target.value)} className="border rounded-lg px-3 py-1.5 text-sm"><option value="tanpa_foto">Tanpa Foto / Ringkas</option><option value="dengan_foto">Dengan Lampiran Foto</option></select></div>
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium">Urutan & Klasifikasi:</label>
-              <select value={sortOption} onChange={e=>{setSortOption(e.target.value); setSelectedBuildingFilter('');}} className="border rounded-lg px-3 py-1.5 text-sm">
-                <option value="ID_DEFECT">Berdasarkan ID Defect</option><option value="BANGUNAN">Kelompokkan Per Bangunan</option><option value="SPESIFIK">Fokus 1 Bangunan Spesifik</option>
-              </select>
-              {sortOption === 'SPESIFIK' && (
-                <select value={selectedBuildingFilter} onChange={e=>setSelectedBuildingFilter(e.target.value)} className="border rounded-lg px-3 py-1.5 text-sm bg-blue-50 border-blue-200">
-                  <option value="">-- Pilih Bangunan --</option>{(db.buildings || []).map(b => <option key={b.id} value={b.id}>{b.building_name}</option>)}
+    <div className="space-y-4">
+      {/* Top Toolbar Card sesuai image_8d8524.png */}
+      <div className="bg-white dark:bg-slate-800 px-5 py-4 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm flex flex-wrap items-center justify-between gap-4 print:hidden">
+        {/* Kiri: Icon + Status Tiket + Pengelompokan (+ Filter Proyek jika > 1 proyek) */}
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/40 text-[#0F4C81] dark:text-blue-400 flex items-center justify-center shrink-0">
+            <FileText size={19} />
+          </div>
+
+          <div className="flex flex-col">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">STATUS TIKET</span>
+            <select
+              value={selectedStatus}
+              onChange={e => setSelectedStatus(e.target.value)}
+              className={`min-w-[155px] px-3 py-2 rounded-xl border text-xs font-bold outline-none cursor-pointer ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-700'}`}
+            >
+              <option value="ALL">Semua Status</option>
+              <option value="Open">Open</option>
+              <option value="Proses Perbaikan">Proses Perbaikan</option>
+              <option value="Close">Close</option>
+            </select>
+          </div>
+
+          <div className="hidden sm:block h-9 w-[1px] bg-slate-200 dark:bg-slate-700" />
+
+          <div className="flex flex-col">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">PENGELOMPOKAN</span>
+            <select
+              value={groupBy}
+              onChange={e => setGroupBy(e.target.value)}
+              className={`min-w-[175px] px-3 py-2 rounded-xl border text-xs font-bold outline-none cursor-pointer ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-700'}`}
+            >
+              <option value="id">Berdasarkan ID</option>
+              <option value="building">Berdasarkan Bangunan</option>
+              <option value="discipline">Berdasarkan Disiplin</option>
+              <option value="category">Berdasarkan Kategori</option>
+            </select>
+          </div>
+
+          {(db.projects || []).length > 1 && (
+            <>
+              <div className="hidden sm:block h-9 w-[1px] bg-slate-200 dark:bg-slate-700" />
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">PROYEK</span>
+                <select
+                  value={selectedProject}
+                  onChange={e => setSelectedProject(e.target.value)}
+                  className={`min-w-[165px] px-3 py-2 rounded-xl border text-xs font-bold outline-none cursor-pointer ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-700'}`}
+                >
+                  <option value="ALL">Semua Proyek</option>
+                  {(db.projects || []).map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
                 </select>
-              )}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={exportExcel} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium"><Download size={16} className="inline mr-1"/> Export Excel</button>
-            <button onClick={handlePrint} disabled={isExportingPDF} className="px-4 py-2 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-lg text-sm font-medium shadow-sm"><Printer size={16} className="inline mr-1"/> {isExportingPDF ? 'Mengekspor PDF A3...' : 'Export PDF A3'}</button>
-          </div>
+              </div>
+            </>
+          )}
         </div>
-        <div className="flex gap-4 border-t pt-3 text-sm font-bold mt-2">
-          <span>Ringkasan Data:</span><span className="text-[#0F4C81]">Total: {stats.total}</span><span className="text-red-500">Open: {stats.open}</span><span className="text-yellow-600">Proses: {stats.proses}</span><span className="text-green-500">Close: {stats.close}</span>
+
+        {/* Kanan: Lampiran + Download CSV + Print PDF */}
+        <div className="flex items-end gap-2.5 ml-auto">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 text-right mb-1">LAMPIRAN</span>
+            <select
+              value={attachmentMode}
+              onChange={e => setAttachmentMode(e.target.value)}
+              className={`min-w-[155px] px-3 py-2 rounded-xl border text-xs font-bold outline-none cursor-pointer ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-700'}`}
+            >
+              <option value="ringkas">Ringkas (Teks)</option>
+              <option value="foto">Lengkap (+ Foto)</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleExportCSV}
+            title="Download CSV"
+            className="p-2.5 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 transition-colors"
+          >
+            <Download size={16} />
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePrintReportPDF}
+            disabled={isPrintingReport}
+            className="px-4 py-2.5 rounded-xl bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 shadow-sm transition-all disabled:opacity-60"
+          >
+            <Printer size={15} /> {isPrintingReport ? 'PRINTING...' : 'PRINT PDF'}
+          </button>
         </div>
       </div>
 
-      <div id="printable-area" className={`p-6 ${isExportingPDF ? 'bg-white w-max text-black' : 'text-gray-900 flex-1 overflow-auto print:hidden'}`}>
-        <div className="mb-6 pb-2 text-left">
-          <h1 className="text-2xl font-bold uppercase tracking-widest mb-2">LAPORAN QUALITY CONTROL PQCS</h1>
-          <table className="text-sm font-medium"><tbody><tr><td className="pr-4 py-1">Nama Proyek</td><td>: {projectTitle} {sortOption === 'SPESIFIK' && selectedBuildingFilter ? `(${(db.buildings || []).find(b=>b.id===parseInt(selectedBuildingFilter))?.building_name})` : ''}</td></tr><tr><td className="pr-4 py-1">Tanggal Cetak</td><td>: {new Date().toLocaleDateString('id-ID')}</td></tr></tbody></table>
+      {/* Area Laporan Utama sesuai image_8d8524.png */}
+      <div id="pqcs-report-table-printable" className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-5">
+        {/* Header: LAPORAN QC + Nama Proyek (kiri) & DICETAK PADA + Tanggal (kanan) */}
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-2">
+          <div>
+            <h2 className="text-xl font-black tracking-[0.08em] text-slate-900 dark:text-white uppercase">
+              LAPORAN QC
+            </h2>
+            <div className="flex items-center gap-1.5 mt-1 text-xs font-extrabold uppercase tracking-wide text-[#0F4C81] dark:text-blue-400">
+              <Building size={13} />
+              <span>{selectedProjectTitle}</span>
+            </div>
+          </div>
+          <div className="text-left sm:text-right">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">DICETAK PADA</p>
+            <p className="text-xs font-extrabold text-slate-800 dark:text-slate-200 mt-0.5">
+              {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}
+            </p>
+          </div>
         </div>
 
-        <div className={`border border-gray-400 bg-white ${isExportingPDF ? '' : 'overflow-auto max-h-full'}`}>
-          <table style={{ width: reportType === 'dengan_foto' ? '1520px' : '1140px' }} className="text-left border-collapse table-fixed bg-white">
-            <thead className={`bg-gray-200 uppercase font-bold ${isExportingPDF ? '' : 'sticky top-0 z-10 shadow-sm'}`}>
-              <tr>
-                <th style={{ width: '30px' }} className={thClass}>No</th>
-                <th style={{ width: '70px' }} className={thClass}>ID Defect</th>
-                <th style={{ width: '70px' }} className={thClass}>Tanggal<br/>Defect</th>
-                <th style={{ width: '90px' }} className={thClass}>Bangunan</th>
-                <th style={{ width: '70px' }} className={thClass}>Lokasi<br/>Denah</th>
-                <th style={{ width: '70px' }} className={thClass}>Disiplin</th>
-                <th style={{ width: '70px' }} className={thClass}>Kategori</th>
-                <th style={{ width: '140px' }} className={thClass}>Jenis Defect</th>
-                {reportType === 'dengan_foto' && <th style={{ width: '100px' }} className={thClass}>Denah (Gambar)</th>}
-                {reportType === 'dengan_foto' && <th style={{ width: '140px' }} className={thClass}>Foto Defect</th>}
-                <th style={{ width: '140px' }} className={thClass}>Catatan Tambahan</th>
-                <th style={{ width: '40px' }} className={thClass}>SLA</th>
-                <th style={{ width: '70px' }} className={thClass}>Tanggal<br/>Perbaikan</th>
-                {reportType === 'dengan_foto' && <th style={{ width: '140px' }} className={thClass}>Foto Perbaikan</th>}
-                <th style={{ width: '140px' }} className={thClass}>Catatan Perbaikan</th>
-                <th style={{ width: '60px' }} className={thClass}>Close By</th>
-                <th style={{ width: '80px' }} className={thClass}>Status</th>
+        {/* 4 Summary Cards: TOTAL DEFECT, OPEN, PROSES, CLOSE */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Card 1: TOTAL DEFECT */}
+          <div className="p-4 rounded-2xl border border-slate-200/90 dark:border-slate-700 bg-white dark:bg-slate-900/40 flex items-center justify-between shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+            <div>
+              <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">TOTAL DEFECT</p>
+              <p className="text-2xl font-black text-[#1E3A8A] dark:text-blue-400 mt-1">{summary.total}</p>
+            </div>
+            <div className="w-8 h-8 rounded-lg border border-blue-100 bg-blue-50/70 text-[#2563EB] flex items-center justify-center">
+              <FileText size={15} />
+            </div>
+          </div>
+
+          {/* Card 2: OPEN */}
+          <div className="p-4 rounded-2xl border border-slate-200/90 dark:border-slate-700 bg-white dark:bg-slate-900/40 flex items-center justify-between shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-br from-rose-400 to-rose-600 inline-block shadow-sm" />
+                <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">OPEN</p>
+              </div>
+              <p className="text-2xl font-black text-rose-500 mt-1">{summary.open}</p>
+            </div>
+            <div className="w-8 h-8 rounded-lg border border-rose-100 bg-rose-50/70 text-rose-500 flex items-center justify-center">
+              <AlertCircle size={15} />
+            </div>
+          </div>
+
+          {/* Card 3: PROSES */}
+          <div className="p-4 rounded-2xl border border-slate-200/90 dark:border-slate-700 bg-white dark:bg-slate-900/40 flex items-center justify-between shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 inline-block shadow-sm" />
+                <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">PROSES</p>
+              </div>
+              <p className="text-2xl font-black text-amber-500 mt-1">{summary.inProgress}</p>
+            </div>
+            <div className="w-8 h-8 rounded-lg border border-amber-100 bg-amber-50/70 text-amber-500 flex items-center justify-center">
+              <Clock size={15} />
+            </div>
+          </div>
+
+          {/* Card 4: CLOSE */}
+          <div className="p-4 rounded-2xl border border-slate-200/90 dark:border-slate-700 bg-white dark:bg-slate-900/40 flex items-center justify-between shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-br from-emerald-300 to-emerald-500 inline-block shadow-sm" />
+                <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">CLOSE</p>
+              </div>
+              <p className="text-2xl font-black text-emerald-500 mt-1">{summary.closed}</p>
+            </div>
+            <div className="w-8 h-8 rounded-lg border border-emerald-100 bg-emerald-50/70 text-emerald-500 flex items-center justify-center">
+              <CheckCircle size={15} />
+            </div>
+          </div>
+        </div>
+
+        {/* Tabel Laporan dengan Header Navy (#23406E), Sudut Atas Melengkung, dan Garis Grid */}
+        <div className="overflow-x-auto rounded-t-xl border border-slate-200 dark:border-slate-700">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-[#23406E] text-white text-[11px] font-extrabold uppercase tracking-wider">
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-12">NO</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-24">ID DEFECT</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-24">TGL TEMUAN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">BANGUNAN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">DENAH</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">DISIPLIN</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">KATEGORI</th>
+                <th className="py-3.5 px-4 border-r border-slate-400/30 text-center">JENIS TEMUAN</th>
+                {attachmentMode === 'foto' && (
+                  <>
+                    <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">DENAH LOKASI</th>
+                    <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">BUKTI DEFECT</th>
+                  </>
+                )}
+                <th className="py-3.5 px-4 border-r border-slate-400/30 text-center">CATATAN AWAL</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-20">INFO SLA</th>
+                <th className="py-3.5 px-3 border-r border-slate-400/30 text-center w-24">TGL SELESAI</th>
+                {attachmentMode === 'foto' && (
+                  <th className="py-3.5 px-3 border-r border-slate-400/30 text-center">BUKTI SELESAI</th>
+                )}
+                <th className="py-3.5 px-4 border-r border-slate-400/30 text-center">CATATAN ACTION</th>
+                <th className="py-3.5 px-3 text-center">STATUS AKHIR</th>
               </tr>
             </thead>
-            <tbody>
-              {reportData.length === 0 ? (
-                <tr><td colSpan={reportType === 'dengan_foto' ? "17" : "14"} className="text-center py-6 text-gray-500 border border-gray-400">Tidak ada data untuk laporan.</td></tr>
-              ) : (
-                reportData.map((d, i) => {
-                  const slaInfo = calculateSlaStatus(d.defect_date, d.sla_days, d.action_date);
-                  return (
-                  <tr key={d.id} className="hover:bg-gray-50 border-b border-gray-400 bg-white" style={{ pageBreakInside: 'avoid' }}>
-                    <td className={`${tdClass} text-center font-bold`}>{i + 1}</td>
-                    <td className={`${tdClass} font-medium`}>{d.defect_code}</td>
-                    <td className={tdClass}>{d.defect_date}</td>
-                    <td className={tdClass}>{d.building_name}</td>
-                    <td className={tdClass}>{d.floorplan_name}</td>
-                    <td className={tdClass}>{d.discipline}</td>
-                    <td className={tdClass}>{d.defect_category}</td>
-                    <td className={tdClass}>{d.defect_type}</td>
-                    {reportType === 'dengan_foto' && <td className={tdPhotoClass}>{d.floorplan_image ? <img src={d.floorplan_image} alt="denah" className={`${imgClass}`} /> : <span className="text-xs text-gray-400 italic">No Image</span>}</td>}
-                    {reportType === 'dengan_foto' && <td className={tdPhotoClass}><div className="flex gap-2 flex-wrap justify-center">{d.defect_photo && d.defect_photo.length > 0 ? d.defect_photo.map((p, idx) => <img key={idx} src={p} alt="defect" className={imgClass} />) : <span className="text-xs text-gray-400 italic">No Image</span>}</div></td>}
-                    <td className={tdClass}>{d.notes || '-'}</td>
-                    <td className={`${tdClass} ${slaInfo.style}`}>{slaInfo.text}</td>
-                    <td className={tdClass}>{d.action_date}</td>
-                    {reportType === 'dengan_foto' && <td className={tdPhotoClass}><div className="flex gap-2 flex-wrap justify-center">{d.action_photos && d.action_photos.length > 0 ? d.action_photos.map((p, idx) => <img key={idx} src={p} alt="action" className={imgClass} />) : <span className="text-xs text-gray-400 italic">No Image</span>}</div></td>}
-                    <td className={tdClass}>{d.action_note || '-'}</td>
-                    <td className={`${tdClass} text-center`}>{d.close_by_name}</td>
-                    <td className={`${tdClass} font-bold`}>{d.current_status}</td>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+              {filteredReport.map((item, idx) => {
+                const sla = calculateSlaStatus(item.defect_date, item.sla_days, item.action_date);
+                return (
+                  <tr
+                    key={item.id}
+                    onClick={() => setSelectedDocItem(item)}
+                    title="Klik untuk membuka form cetak NCR / Defect"
+                    className="hover:bg-blue-50/70 dark:hover:bg-slate-700/60 cursor-pointer transition-colors bg-white dark:bg-slate-800"
+                  >
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-medium text-slate-600 dark:text-slate-300">
+                      {idx + 1}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-bold text-slate-800 dark:text-white whitespace-nowrap">
+                      {item.defect_code}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-medium text-slate-700 dark:text-slate-300">
+                      {item.defect_date}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-semibold text-slate-800 dark:text-slate-200 uppercase">
+                      {item.building_name}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-300">
+                      {item.floorplan_name}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-300">
+                      {item.discipline}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                      {item.defect_category}
+                    </td>
+                    <td className="py-3.5 px-4 border-r border-slate-200 dark:border-slate-700 font-semibold text-slate-800 dark:text-white min-w-[160px]">
+                      {item.defect_type}
+                    </td>
+                    {attachmentMode === 'foto' && (
+                      <>
+                        <td className="py-3 px-3 border-r border-slate-200 dark:border-slate-700 text-center min-w-[100px]">
+                          {item.floorplan_image ? (
+                            <img src={item.floorplan_image} alt="Denah Lokasi" className="w-16 h-20 object-contain mx-auto rounded border border-slate-200 bg-white shadow-xs" />
+                          ) : (
+                            <span className="text-slate-300 font-bold text-[11px]">N/A</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 border-r border-slate-200 dark:border-slate-700 text-center min-w-[110px]">
+                          {(item.defect_photo || []).length > 0 ? (
+                            <div className="flex flex-col items-center gap-1.5">
+                              {(item.defect_photo || []).slice(0, 2).map((src, i) => (
+                                <img key={i} src={src} alt={`Bukti Defect ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 shadow-xs" />
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-slate-300 font-bold text-[11px]">N/A</span>
+                          )}
+                        </td>
+                      </>
+                    )}
+                    <td className="py-3.5 px-4 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-600 dark:text-slate-300 min-w-[140px]">
+                      {item.notes && item.notes.trim() !== '' ? item.notes : '-'}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-bold text-emerald-600">
+                      {sla.text}
+                    </td>
+                    <td className="py-3.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center font-medium text-slate-700 dark:text-slate-300">
+                      {item.action_date || '-'}
+                    </td>
+                    {attachmentMode === 'foto' && (
+                      <td className="py-3 px-3 border-r border-slate-200 dark:border-slate-700 text-center min-w-[110px]">
+                        {(item.action_photos || []).length > 0 ? (
+                          <div className="flex flex-col items-center gap-1.5">
+                            {(item.action_photos || []).slice(0, 2).map((src, i) => (
+                              <img key={i} src={src} alt={`Bukti Selesai ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 shadow-xs" />
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-slate-300 font-bold text-[11px]">N/A</span>
+                        )}
+                      </td>
+                    )}
+                    <td className="py-3.5 px-4 border-r border-slate-200 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-300 min-w-[140px]">
+                      {item.action_note && item.action_note.trim() !== '' ? item.action_note : '-'}
+                    </td>
+                    <td className="py-3.5 px-3 text-center font-extrabold uppercase whitespace-nowrap">
+                      <span className={
+                        item.current_status === 'Close'
+                          ? 'text-emerald-600'
+                          : item.current_status === 'Proses Perbaikan'
+                          ? 'text-amber-500'
+                          : 'text-rose-500'
+                      }>
+                        {item.current_status === 'Close' ? 'CLOSE' : item.current_status === 'Proses Perbaikan' ? 'PROSES' : 'OPEN'}
+                      </span>
+                    </td>
                   </tr>
-                )})
+                );
+              })}
+              {filteredReport.length === 0 && (
+                <tr>
+                  <td colSpan={attachmentMode === 'foto' ? 16 : 13} className="p-8 text-center text-slate-400 font-bold">
+                    Belum ada data laporan untuk ditampilkan.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {selectedDocItem && (
+        <DocumentFormPreviewModal data={selectedDocItem} db={db} onClose={() => setSelectedDocItem(null)} />
+      )}
     </div>
   );
 }
 
 // --- SETTINGS VIEW ---
-function SettingsView({ setDb, darkMode, db, currentUser, setCurrentUser }) {
-  const [activeTab, setActiveTab] = useState('inspectors');
-  const [inspectorForm, setInspectorForm] = useState({ id: null, name: '', initial: '', authority: 'User', password: '' });
-  const [showPassword, setShowPassword] = useState(false);
+function SettingsView({ db, setDb, darkMode }) {
+  const [name, setName] = useState('');
+  const [initial, setInitial] = useState('');
+  const [authority, setAuthority] = useState('Inspector');
+  const [password, setPassword] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
-  const handleBackup = () => {
+  const handleAddUser = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || !password.trim()) return;
+    setIsSaving(true);
     try {
-      const dataStr = JSON.stringify(db); const dataBlob = new Blob([dataStr], { type: 'application/json' });
-      const url = URL.createObjectURL(dataBlob); const link = document.createElement('a'); link.href = url;
-      link.download = `PQCS_Backup_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
-    } catch (error) { alert('Gagal membuat file backup. Coba lagi.'); }
-  };
-
-  const inputClass = `w-full p-2.5 rounded-lg border text-sm focus:ring-2 focus:ring-[#0F4C81] outline-none transition-all ${darkMode ? 'bg-gray-900 border-gray-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`;
-  const labelClass = "block text-sm font-medium mb-1";
-
-  const handleSaveInspector = async (e) => {
-    if (e) e.preventDefault();
-    if (!inspectorForm.name.trim() || !inspectorForm.initial.trim() || !inspectorForm.authority || !inspectorForm.password) { 
-      alert('Peringatan: Semua field (Nama, Inisial, Otoritas, Password) wajib diisi!'); 
-      return; 
-    }
-    
-    try {
-      const payload = { 
-        name: inspectorForm.name.trim(), 
-        initial: inspectorForm.initial.trim().toUpperCase(),
-        authority: inspectorForm.authority,
-        password: inspectorForm.password
-      };
-      
-      if (inspectorForm.id) {
-        const res = await fetchSupabase(`inspectors?id=eq.${inspectorForm.id}`, 'PATCH', payload);
-        const data = Array.isArray(res) ? res[0] : res;
-        if (!data) throw new Error("Gagal mengupdate. Pastikan RLS dimatikan.");
-        setDb(prev => ({ ...prev, inspectors: (prev.inspectors || []).map(i => i.id === inspectorForm.id ? data : i) }));
-        alert("Inspector berhasil diupdate!");
-      } else {
-        const res = await fetchSupabase('inspectors', 'POST', payload);
-        const data = Array.isArray(res) ? res[0] : res;
-        if (!data) throw new Error("Gagal menyimpan. Pastikan RLS dimatikan.");
-        setDb(prev => ({ ...prev, inspectors: [...(prev.inspectors || []), data] }));
-        alert("Inspector berhasil ditambahkan!");
+      const res = await fetchSupabase('inspectors', 'POST', {
+        name: name.trim(),
+        initial: initial.trim() || name.trim().slice(0, 3).toUpperCase(),
+        authority,
+        password: password.trim()
+      });
+      if (res && res[0]) {
+        setDb(prev => ({ ...prev, inspectors: [...(prev.inspectors || []), res[0]] }));
+        setName('');
+        setInitial('');
+        setPassword('');
       }
-      setInspectorForm({ id: null, name: '', initial: '', authority: 'User', password: '' });
-    } catch(err) {
-      alert("Error: " + err.message);
+    } catch (err) {
+      alert("Gagal menambah user: " + err.message);
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleDeleteInspector = async (insId) => {
-    if(!window.confirm("Hapus inspector ini?")) return;
+  const handleDeleteUser = async (id) => {
     try {
-       await fetchSupabase(`inspectors?id=eq.${insId}`, 'DELETE');
-    } catch(err) { console.warn("Peringatan dari Cloud: " + err.message); }
-    setDb(prev => ({...prev, inspectors: (prev.inspectors || []).filter(i => i.id !== insId)})); 
-    if(inspectorForm.id === insId) setInspectorForm({id:null, name:'', initial:'', authority: 'User', password: ''});
+      await fetchSupabase(`inspectors?id=eq.${id}`, 'DELETE');
+      setDb(prev => ({ ...prev, inspectors: (prev.inspectors || []).filter(i => i.id !== id) }));
+    } catch (err) {
+      alert("Gagal menghapus user: " + err.message);
+    }
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      
-      {/* TAB MENU */}
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 overflow-hidden">
-        <div className="flex border-b dark:border-gray-700 text-sm md:text-base font-bold text-gray-500 bg-gray-50 dark:bg-gray-900/50">
-          <button onClick={() => setActiveTab('inspectors')} className={`flex-1 py-4 text-center font-bold capitalize transition-colors ${activeTab === 'inspectors' ? 'border-b-2 border-[#0F4C81] text-[#0F4C81] dark:text-blue-400' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-            Inspectors
-          </button>
-          <button onClick={() => setActiveTab('profile')} className={`flex-1 py-4 text-center font-bold capitalize transition-colors ${activeTab === 'profile' ? 'border-b-2 border-[#0F4C81] text-[#0F4C81] dark:text-blue-400' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-            Profil & Sistem
-          </button>
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+        <h2 className="text-2xl font-black text-slate-800 dark:text-white">Pengaturan Sistem & Manajemen User</h2>
+        <p className="text-xs font-medium text-slate-500 mt-1">Kelola akun inspector dan hak akses administrator sistem PQCS.</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-4">
+          <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2"><Users size={18} className="text-[#0F4C81]"/> Tambah Akun User</h3>
+          <form onSubmit={handleAddUser} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Lengkap *</label>
+              <input type="text" required value={name} onChange={e => setName(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Inisial</label>
+                <input type="text" value={initial} onChange={e => setInitial(e.target.value)} placeholder="ADM" className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Role / Hak Akses</label>
+                <select value={authority} onChange={e => setAuthority(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`}>
+                  <option value="Admin">Admin</option>
+                  <option value="Inspector">Inspector</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Password *</label>
+              <input type="text" required value={password} onChange={e => setPassword(e.target.value)} className={`w-full p-3 rounded-xl border-2 text-sm font-medium outline-none ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'}`} />
+            </div>
+            <button type="submit" disabled={isSaving} className="w-full py-3 bg-[#0F4C81] hover:bg-blue-800 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2">
+              <Plus size={16}/> Tambah User
+            </button>
+          </form>
         </div>
 
-        <div className="p-4 md:p-6">
-          {activeTab === 'inspectors' && (
-            <div className="grid md:grid-cols-2 gap-8">
-              <div>
-                <h3 className="text-lg font-bold mb-4 flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-2"><Users size={20}/> {inspectorForm.id ? 'Edit Inspector' : 'Tambah Inspector'}</span>
-                  {inspectorForm.id && <button onClick={() => setInspectorForm({id:null, name:'', initial:'', authority: 'User', password: ''})} className="text-sm font-normal text-blue-600 hover:underline">Batal Edit</button>}
-                </h3>
-                <form className="space-y-4">
-                  <div>
-                    <label className={labelClass}>Nama Lengkap</label>
-                    <input type="text" value={inspectorForm.name} onChange={e=>setInspectorForm({...inspectorForm, name: e.target.value})} className={inputClass} placeholder="Cth: Budi Santoso" />
-                  </div>
-                  <div>
-                    <label className={labelClass}>Inisial (Maks. 3 Huruf)</label>
-                    <input type="text" value={inspectorForm.initial} onChange={e => setInspectorForm({...inspectorForm, initial: e.target.value.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3)})} maxLength={3} className={inputClass} placeholder="Cth: BDI" />
-                  </div>
-                  <div>
-                    <label className={labelClass}>Authority</label>
-                    <select className={inputClass} value={inspectorForm.authority} onChange={e => setInspectorForm({...inspectorForm, authority: e.target.value})}>
-                      <option value="Admin">Admin</option>
-                      <option value="User">User</option>
-                      <option value="Viewer">Viewer</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelClass}>Password</label>
-                    <div className="relative">
-                      <input type={showPassword ? "text" : "password"} value={inspectorForm.password} onChange={e => setInspectorForm({...inspectorForm, password: e.target.value})} className={inputClass} placeholder="Ketik Password..." />
-                      <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700">
-                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                      </button>
-                    </div>
-                  </div>
-                  <button type="button" onClick={handleSaveInspector} className={`px-6 py-2.5 mt-2 text-white rounded-lg flex items-center justify-center font-medium shadow-sm transition-colors ${inspectorForm.id ? 'bg-orange-500 hover:bg-orange-600' : 'bg-[#294B73] hover:bg-blue-900'}`}>
-                    {inspectorForm.id ? <Save size={18} className="mr-2"/> : <Plus size={18} className="mr-2"/>} Simpan
-                  </button>
-                </form>
-              </div>
-
-              <div>
-                <h3 className="text-lg font-bold mb-4">Daftar Inspector</h3>
-                <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm bg-white dark:bg-gray-800">
-                  <table className="w-full text-left text-sm border-collapse">
-                    <thead className="bg-gray-100 dark:bg-gray-900 border-b dark:border-gray-700">
-                      <tr>
-                        <th className="p-3 text-center">No</th>
-                        <th>Nama Lengkap</th>
-                        <th className="text-center">Inisial</th>
-                        <th className="text-center">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(db.inspectors || []).length === 0 ? (
-                        <tr><td colSpan="4" className="text-center p-6 text-gray-500">Belum ada data.</td></tr>
-                      ) : (
-                        (db.inspectors || []).map((ins, idx) => (
-                          <tr key={ins.id} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                            <td className="p-3 text-center text-gray-500">{idx + 1}</td>
-                            <td className="p-3 font-semibold">{ins.name}</td>
-                            <td className="p-3 text-center"><span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-md font-bold text-xs">{ins.initial}</span></td>
-                            <td className="p-3 text-center flex justify-center gap-1">
-                              <button onClick={() => setInspectorForm({id: ins.id, name: ins.name, initial: ins.initial, authority: ins.authority || 'User', password: ins.password || ''})} className="text-blue-500 p-1.5"><Edit size={16}/></button>
-                              <button onClick={() => handleDeleteInspector(ins.id)} className="text-red-500 p-1.5"><Trash2 size={16}/></button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'profile' && (
-            <div className="space-y-6 max-w-3xl">
-              <div className="bg-gray-50 dark:bg-gray-900/50 p-6 rounded-xl border dark:border-gray-700">
-                  <h3 className="font-bold mb-4 flex items-center gap-2"><Users size={18} className="text-[#0F4C81]"/> Profil Pengguna</h3>
-                  <div>
-                    <label className={labelClass}>Akses Sebagai</label>
-                    <select className={inputClass} value={currentUser?.role || 'Admin'} onChange={e => setCurrentUser({...currentUser, role: e.target.value})}>
-                      <option value="Admin">Admin (Akses Penuh)</option>
-                      <option value="User">User (Akses Terbatas)</option>
-                      <option value="Viewer">Viewer (Hanya Melihat)</option>
-                    </select>
-                  </div>
-              </div>
-
-              <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-xl border border-green-200 dark:border-green-800 flex items-start gap-3">
-                  <CheckCircle size={24} className="text-green-600 dark:text-green-400 flex-shrink-0 mt-1" />
-                  <div>
-                    <h3 className="font-bold text-green-800 dark:text-green-300">Terhubung ke Cloud Database</h3>
-                    <p className="text-xs mt-1 text-green-700 dark:text-green-400">Aplikasi telah dikonfigurasi secara permanen untuk menggunakan REST API Supabase secara real-time. Pengaturan API key manual telah dinonaktifkan demi keamanan.</p>
-                  </div>
-              </div>
-
-              <div className="bg-gray-50 dark:bg-gray-900/50 p-6 rounded-xl border dark:border-gray-700 flex justify-between items-center">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
+          <h3 className="text-lg font-black text-slate-800 dark:text-white">Daftar User Terdaftar</h3>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {(db.inspectors || []).map(ins => (
+              <div key={ins.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700">
                 <div>
-                  <h3 className="font-bold text-gray-800 dark:text-gray-200">Backup JSON</h3>
-                  <p className="text-xs text-gray-500">Unduh salinan data dari cloud ke komputer Anda</p>
+                  <p className="text-sm font-bold text-slate-800 dark:text-white">{ins.name} <span className="text-xs text-slate-400">({ins.initial})</span></p>
+                  <p className="text-[11px] font-semibold text-[#0F4C81] dark:text-blue-400">{ins.authority}</p>
                 </div>
-                <button onClick={handleBackup} className="px-6 py-2.5 bg-[#0F4C81] text-white rounded-xl font-medium text-sm flex items-center gap-2 hover:bg-blue-800 transition-colors"><Download size={16} /> Download</button>
+                <button onClick={() => handleDeleteUser(ins.id)} className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg"><Trash2 size={16}/></button>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       </div>
     </div>
