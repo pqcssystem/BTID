@@ -993,7 +993,7 @@ function DocumentFormPreviewModal({ data, db, onClose }) {
 
                 {/* RIGHT PHOTO BOX: AFTER / ACTION */}
                 <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
-                  <div style={sectionBannerStyle}>PHOTO DEFECT / FINDING</div>
+                  <div style={sectionBannerStyle}>PHOTO ACTION / RECTIFICATION</div>
                   {/* Photo 1 */}
                   <div style={{ height: '162px', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', borderBottom: `1.2px solid ${borderColor}` }}>
                     {actionPhotos[0] ? (
@@ -1155,7 +1155,7 @@ function DocumentFormPreviewModal({ data, db, onClose }) {
                 </div>
 
                 <div style={{ border: `1.5px solid ${borderColor}`, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF' }}>
-                  <div style={sectionBannerStyle}>PHOTO DEFECT / FINDING</div>
+                  <div style={sectionBannerStyle}>PHOTO ACTION / RECTIFICATION</div>
                   <div style={{ height: '210px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: `1.2px solid ${borderColor}` }}>
                     {actionPhotos[0] ? <img src={actionPhotos[0]} alt="Photo 1" style={{ maxHeight: '198px', maxWidth: '100%', objectFit: 'contain' }} /> : null}
                   </div>
@@ -1539,10 +1539,16 @@ function InputDefectView({ db, setDb, currentUser, darkMode, primaryColor }) {
               <label className="block text-xs font-bold uppercase text-slate-500">Bukti Foto Defect ({photos.length}/2 Maks.)</label>
             </div>
             {photos.length < 2 && (
-              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
-                <Camera size={18}/> Ambil / Upload Foto ({2 - photos.length} slot tersisa)
-                <input type="file" accept="image/*" multiple onChange={handlePhotoUpload} className="hidden" />
-              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                  <Camera size={18}/> Kamera
+                  <input type="file" accept="image/*" capture="environment" onChange={handlePhotoUpload} onClick={e => { e.target.value = null; }} className="hidden" />
+                </label>
+                <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                  <UploadCloud size={18}/> Upload File
+                  <input type="file" accept="image/*" multiple onChange={handlePhotoUpload} onClick={e => { e.target.value = null; }} className="hidden" />
+                </label>
+              </div>
             )}
             {photos.length > 0 && (
               <div className="grid grid-cols-2 gap-3 mt-3">
@@ -2195,10 +2201,16 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
           <div>
             <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Bukti Foto Defect ({defectPhotos.length}/2 Maks.)</label>
             {defectPhotos.length < 2 && (
-              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
-                <Camera size={18}/> Ambil / Upload Foto ({2 - defectPhotos.length} slot tersisa)
-                <input type="file" accept="image/*" multiple onChange={e => handlePhotoAdd(e, 'defect')} className="hidden" />
-              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                  <Camera size={18}/> Kamera
+                  <input type="file" accept="image/*" capture="environment" onChange={e => handlePhotoAdd(e, 'defect')} onClick={e => { e.target.value = null; }} className="hidden" />
+                </label>
+                <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-600 dark:text-slate-300">
+                  <UploadCloud size={18}/> Upload File
+                  <input type="file" accept="image/*" multiple onChange={e => handlePhotoAdd(e, 'defect')} onClick={e => { e.target.value = null; }} className="hidden" />
+                </label>
+              </div>
             )}
             {defectPhotos.length > 0 && (
               <div className="grid grid-cols-2 gap-3 mt-3">
@@ -2319,10 +2331,16 @@ function ActionDetailView({ defect, db, setDb, currentUser, darkMode, onBack }) 
           <div className="space-y-3">
             <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Foto Hasil Perbaikan ({actionPhotos.length}/2 Maks.)</label>
             {actionPhotos.length < 2 && (
-              <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-500">
-                <Camera size={18}/> Upload Foto Perbaikan ({2 - actionPhotos.length} slot tersisa)
-                <input type="file" accept="image/*" multiple onChange={e => handlePhotoAdd(e, 'action')} className="hidden" />
-              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-500 dark:text-slate-300">
+                  <Camera size={18}/> Kamera
+                  <input type="file" accept="image/*" capture="environment" onChange={e => handlePhotoAdd(e, 'action')} onClick={e => { e.target.value = null; }} className="hidden" />
+                </label>
+                <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-[#0F4C81] transition-colors text-xs font-bold text-slate-500 dark:text-slate-300">
+                  <UploadCloud size={18}/> Upload File
+                  <input type="file" accept="image/*" multiple onChange={e => handlePhotoAdd(e, 'action')} onClick={e => { e.target.value = null; }} className="hidden" />
+                </label>
+              </div>
             )}
             {actionPhotos.length > 0 && (
               <div className="grid grid-cols-2 gap-3 mt-2">
@@ -2811,7 +2829,7 @@ function ReportView({ db, darkMode }) {
       </div>
 
       {selectedDocItem && (
-        <DocumentFormPreviewModal data={selectedDocItem} db={db} onClose={() => setPreviewDocData ? setPreviewDocData(null) : setSelectedDocItem(null)} />
+        <DocumentFormPreviewModal data={selectedDocItem} db={db} onClose={() => setSelectedDocItem(null)} />
       )}
 
       {/* Template Khusus Export PDF A4 Landscape sesuai image_a6768c.jpg (Ringkas) & image_a6df88.jpg (Lengkap + Foto) */}
